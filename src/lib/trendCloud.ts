@@ -159,85 +159,471 @@ function calculatePivotStrength(marketData: MarketData[], index: number, type: '
   return Math.min(1.0, Math.max(0.1, (volumeRatio * 0.4 + priceSignificance * 0.6)));
 }
 
+interface RawPivot {
+  index: number;
+  price: number;
+  logPrice: number;
+  type: 'HIGH' | 'LOW';
+  timestamp: Date;
+  method: string;
+  strength: number;
+}
+
+// Ultra-enhanced pivot detection using multiple methods on LOG SCALE (from notebook)
 export function detectClientSidePivots(marketData: MarketData[], timeframe: Timeframe): PivotPoint[] {
   validateMarketData(marketData);
   
-  const pivots: PivotPoint[] = [];
-  const checkWindows = [1, 2];
-
-  for (let i = 2; i < marketData.length - 2; i++) {
-    const currentCandle = marketData[i];
-    let isLocalHigh = false;
-    let isLocalLow = false;
+  // Convert to log scale for analysis
+  const logPrices = marketData.map(candle => Math.log(candle.close));
+  const regularPrices = marketData.map(candle => candle.close);
+  
+  const allPivots: RawPivot[] = [];
+  
+  // Method 1: Scipy-style argrelextrema with multiple windows (LOG SCALE)
+  for (const window of [2, 3, 4, 5, 7, 10, 15]) {
+    const swingHighs = findLocalExtrema(logPrices, 'max', window);
+    const swingLows = findLocalExtrema(logPrices, 'min', window);
     
-    for (const window of checkWindows) {
-      let highInThisWindow = true;
-      let lowInThisWindow = true;
-      
-      // Combined check for both highs and lows
-      for (let j = i - window; j <= i + window; j++) {
-        if (j >= 0 && j < marketData.length && j !== i) {
-          if (marketData[j].high >= currentCandle.high) {
-            highInThisWindow = false;
-          }
-          if (marketData[j].low <= currentCandle.low) {
-            lowInThisWindow = false;
-          }
-        }
-      }
-      
-      if (highInThisWindow) {
-        isLocalHigh = true;
-        break;
-      }
-      if (lowInThisWindow) {
-        isLocalLow = true;
-        break;
-      }
-    }
-    
-    if (isLocalHigh) {
-      const strength = calculatePivotStrength(marketData, i, 'HIGH');
-      pivots.push({
-        id: uuidv4(),
-        timestamp: new Date(currentCandle.timestamp),
-        price: currentCandle.high,
+    for (const idx of swingHighs) {
+      allPivots.push({
+        index: idx,
+        price: regularPrices[idx],
+        logPrice: logPrices[idx],
         type: 'HIGH',
-        timeframe,
-        strength,
-        volume: currentCandle.volume,
-        confirmations: 0,
-        metadata: {
-          lookbackWindow: 2,
-          priceDeviation: Math.abs(currentCandle.high - currentCandle.low),
-          volumeRatio: currentCandle.volume / (marketData[Math.max(0, i-10)].volume || 1),
-          candleIndex: i
-        }
+        timestamp: new Date(marketData[idx].timestamp),
+        method: `scipy_w${window}`,
+        strength: window
       });
     }
     
-    if (isLocalLow) {
-      const strength = calculatePivotStrength(marketData, i, 'LOW');
-      pivots.push({
-        id: uuidv4(),
-        timestamp: new Date(currentCandle.timestamp),
-        price: currentCandle.low,
+    for (const idx of swingLows) {
+      allPivots.push({
+        index: idx,
+        price: regularPrices[idx],
+        logPrice: logPrices[idx],
         type: 'LOW',
-        timeframe,
-        strength,
-        volume: currentCandle.volume,
-        confirmations: 0,
-        metadata: {
-          lookbackWindow: 2,
-          priceDeviation: Math.abs(currentCandle.high - currentCandle.low),
-          volumeRatio: currentCandle.volume / (marketData[Math.max(0, i-10)].volume || 1),
-          candleIndex: i
-        }
+        timestamp: new Date(marketData[idx].timestamp),
+        method: `scipy_w${window}`,
+        strength: window
       });
     }
   }
   
-  return pivots.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+  // Method 2: Rolling window extremes (LOG SCALE)
+  for (const window of [3, 5, 7, 10, 15, 20]) {
+    const rollingExtrema = findRollingExtrema(logPrices, regularPrices, marketData, window);
+    allPivots.push(...rollingExtrema);
+  }
+  
+  // Method 3: ZigZag with multiple thresholds (LOG SCALE)
+  for (const threshold of [0.01, 0.015, 0.02, 0.03, 0.05, 0.08]) {
+    const zigzagPivots = detectZigZagPivots(logPrices, regularPrices, marketData, threshold);
+    for (const pivot of zigzagPivots) {
+      pivot.method = `zigzag_${(threshold * 100).toFixed(1)}pct`;
+      pivot.strength = 1 / threshold;
+      allPivots.push(pivot);
+    }
+  }
+  
+  // Method 4: Fractal-based detection (LOG SCALE)
+  const fractalPivots = detectFractalPivots(logPrices, regularPrices, marketData, 2);
+  for (const pivot of fractalPivots) {
+    pivot.method = 'fractal';
+    pivot.strength = 3;
+    allPivots.push(pivot);
+  }
+  
+  // Method 5: Slope change detection (LOG SCALE)
+  const slopePivots = detectSlopeChangePivots(logPrices, regularPrices, marketData, 3);
+  for (const pivot of slopePivots) {
+    pivot.method = 'slope';
+    pivot.strength = 2;
+    allPivots.push(pivot);
+  }
+  
+  // Method 6: Derivative-based detection (LOG SCALE)
+  const derivativePivots = detectDerivativePivots(logPrices, regularPrices, marketData);
+  for (const pivot of derivativePivots) {
+    pivot.method = 'derivative';
+    pivot.strength = 1.5;
+    allPivots.push(pivot);
+  }
+  
+  // Combine overlapping pivots with tighter proximity
+  const combinedPivots = combineOverlappingPivots(allPivots, 3);
+  
+  // Convert to PivotPoint format
+  return combinedPivots.map(pivot => ({
+    id: uuidv4(),
+    timestamp: pivot.timestamp,
+    price: pivot.price,
+    type: pivot.type,
+    timeframe,
+    strength: pivot.strength,
+    volume: marketData[pivot.index]?.volume || 0,
+    confirmations: 0,
+    metadata: {
+      lookbackWindow: 2,
+      priceDeviation: Math.abs(marketData[pivot.index]?.high - marketData[pivot.index]?.low) || 0,
+      volumeRatio: marketData[pivot.index]?.volume / (marketData[Math.max(0, pivot.index - 10)]?.volume || 1) || 1,
+      candleIndex: pivot.index,
+      logPrice: pivot.logPrice,
+      detectionMethod: pivot.method,
+      enhancedStrength: pivot.strength
+    }
+  })).sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+}
+
+// Helper functions for ultra-enhanced pivot detection
+function findLocalExtrema(logPrices: number[], type: 'max' | 'min', order: number): number[] {
+  const indices: number[] = [];
+  
+  for (let i = order; i < logPrices.length - order; i++) {
+    let isExtremum = true;
+    
+    for (let j = i - order; j <= i + order; j++) {
+      if (j !== i) {
+        if (type === 'max' && logPrices[j] >= logPrices[i]) {
+          isExtremum = false;
+          break;
+        }
+        if (type === 'min' && logPrices[j] <= logPrices[i]) {
+          isExtremum = false;
+          break;
+        }
+      }
+    }
+    
+    if (isExtremum) {
+      indices.push(i);
+    }
+  }
+  
+  return indices;
+}
+
+function findRollingExtrema(logPrices: number[], regularPrices: number[], marketData: MarketData[], window: number): RawPivot[] {
+  const pivots: RawPivot[] = [];
+  const halfWindow = Math.floor(window / 2);
+  
+  for (let i = halfWindow; i < logPrices.length - halfWindow; i++) {
+    const windowStart = i - halfWindow;
+    const windowEnd = i + halfWindow + 1;
+    const windowSlice = logPrices.slice(windowStart, windowEnd);
+    
+    const maxVal = Math.max(...windowSlice);
+    const minVal = Math.min(...windowSlice);
+    
+    if (logPrices[i] === maxVal) {
+      pivots.push({
+        index: i,
+        price: regularPrices[i],
+        logPrice: logPrices[i],
+        type: 'HIGH',
+        timestamp: new Date(marketData[i].timestamp),
+        method: `rolling_w${window}`,
+        strength: window / 3
+      });
+    }
+    
+    if (logPrices[i] === minVal) {
+      pivots.push({
+        index: i,
+        price: regularPrices[i],
+        logPrice: logPrices[i],
+        type: 'LOW',
+        timestamp: new Date(marketData[i].timestamp),
+        method: `rolling_w${window}`,
+        strength: window / 3
+      });
+    }
+  }
+  
+  return pivots;
+}
+
+function detectZigZagPivots(logPrices: number[], regularPrices: number[], marketData: MarketData[], threshold: number): RawPivot[] {
+  const pivots: RawPivot[] = [];
+  
+  if (logPrices.length < 3) return pivots;
+  
+  let lastPivotIdx = 0;
+  let lastPivotLogPrice = logPrices[0];
+  let direction: 'up' | 'down' | null = null;
+  const logThreshold = Math.log(1 + threshold);
+  
+  for (let i = 1; i < logPrices.length; i++) {
+    const logPrice = logPrices[i];
+    const pctChange = logPrice - lastPivotLogPrice; // Log difference = percentage change
+    
+    if (direction === null) {
+      if (pctChange > logThreshold) {
+        direction = 'up';
+      } else if (pctChange < -logThreshold) {
+        direction = 'down';
+      }
+    } else if (direction === 'up') {
+      if (pctChange < -logThreshold) {
+        pivots.push({
+          index: lastPivotIdx,
+          price: regularPrices[lastPivotIdx],
+          logPrice: logPrices[lastPivotIdx],
+          type: 'HIGH',
+          timestamp: new Date(marketData[lastPivotIdx].timestamp),
+          method: 'zigzag',
+          strength: 1
+        });
+        direction = 'down';
+        lastPivotIdx = i;
+        lastPivotLogPrice = logPrice;
+      } else if (logPrice > lastPivotLogPrice) {
+        lastPivotIdx = i;
+        lastPivotLogPrice = logPrice;
+      }
+    } else if (direction === 'down') {
+      if (pctChange > logThreshold) {
+        pivots.push({
+          index: lastPivotIdx,
+          price: regularPrices[lastPivotIdx],
+          logPrice: logPrices[lastPivotIdx],
+          type: 'LOW',
+          timestamp: new Date(marketData[lastPivotIdx].timestamp),
+          method: 'zigzag',
+          strength: 1
+        });
+        direction = 'up';
+        lastPivotIdx = i;
+        lastPivotLogPrice = logPrice;
+      } else if (logPrice < lastPivotLogPrice) {
+        lastPivotIdx = i;
+        lastPivotLogPrice = logPrice;
+      }
+    }
+  }
+  
+  return pivots;
+}
+
+function detectFractalPivots(logPrices: number[], regularPrices: number[], marketData: MarketData[], lookback: number = 2): RawPivot[] {
+  const pivots: RawPivot[] = [];
+  
+  for (let i = lookback; i < logPrices.length - lookback; i++) {
+    let isFractalHigh = true;
+    let isFractalLow = true;
+    
+    for (let j = i - lookback; j <= i + lookback; j++) {
+      if (j !== i) {
+        if (logPrices[j] >= logPrices[i]) isFractalHigh = false;
+        if (logPrices[j] <= logPrices[i]) isFractalLow = false;
+      }
+    }
+    
+    if (isFractalHigh) {
+      pivots.push({
+        index: i,
+        price: regularPrices[i],
+        logPrice: logPrices[i],
+        type: 'HIGH',
+        timestamp: new Date(marketData[i].timestamp),
+        method: 'fractal',
+        strength: 3
+      });
+    }
+    
+    if (isFractalLow) {
+      pivots.push({
+        index: i,
+        price: regularPrices[i],
+        logPrice: logPrices[i],
+        type: 'LOW',
+        timestamp: new Date(marketData[i].timestamp),
+        method: 'fractal',
+        strength: 3
+      });
+    }
+  }
+  
+  return pivots;
+}
+
+function detectSlopeChangePivots(logPrices: number[], regularPrices: number[], marketData: MarketData[], window: number = 3): RawPivot[] {
+  const pivots: RawPivot[] = [];
+  const slopes: number[] = [];
+  
+  // Calculate slopes
+  for (let i = 0; i < logPrices.length - window; i++) {
+    const slope = (logPrices[i + window] - logPrices[i]) / window;
+    slopes.push(slope);
+  }
+  
+  // Find slope changes
+  for (let i = 1; i < slopes.length - 1; i++) {
+    const prevSlope = slopes[i - 1];
+    const currSlope = slopes[i];
+    
+    // Positive to negative (potential high)
+    if (prevSlope > 0 && currSlope < 0) {
+      const pivotIdx = i + Math.floor(window / 2);
+      if (pivotIdx >= 0 && pivotIdx < logPrices.length) {
+        pivots.push({
+          index: pivotIdx,
+          price: regularPrices[pivotIdx],
+          logPrice: logPrices[pivotIdx],
+          type: 'HIGH',
+          timestamp: new Date(marketData[pivotIdx].timestamp),
+          method: 'slope',
+          strength: 2
+        });
+      }
+    }
+    
+    // Negative to positive (potential low)
+    if (prevSlope < 0 && currSlope > 0) {
+      const pivotIdx = i + Math.floor(window / 2);
+      if (pivotIdx >= 0 && pivotIdx < logPrices.length) {
+        pivots.push({
+          index: pivotIdx,
+          price: regularPrices[pivotIdx],
+          logPrice: logPrices[pivotIdx],
+          type: 'LOW',
+          timestamp: new Date(marketData[pivotIdx].timestamp),
+          method: 'slope',
+          strength: 2
+        });
+      }
+    }
+  }
+  
+  return pivots;
+}
+
+function detectDerivativePivots(logPrices: number[], regularPrices: number[], marketData: MarketData[]): RawPivot[] {
+  const pivots: RawPivot[] = [];
+  
+  // Calculate first derivative (gradient)
+  const firstDeriv: number[] = [];
+  for (let i = 1; i < logPrices.length; i++) {
+    firstDeriv.push(logPrices[i] - logPrices[i - 1]);
+  }
+  
+  // Calculate second derivative
+  const secondDeriv: number[] = [];
+  for (let i = 1; i < firstDeriv.length; i++) {
+    secondDeriv.push(firstDeriv[i] - firstDeriv[i - 1]);
+  }
+  
+  // Find sign changes in first derivative and significant second derivative changes
+  for (let i = 1; i < firstDeriv.length - 1; i++) {
+    // Sign changes in first derivative
+    if (firstDeriv[i - 1] > 0 && firstDeriv[i + 1] < 0) { // Peak
+      pivots.push({
+        index: i + 1, // Adjust for derivative offset
+        price: regularPrices[i + 1],
+        logPrice: logPrices[i + 1],
+        type: 'HIGH',
+        timestamp: new Date(marketData[i + 1].timestamp),
+        method: 'derivative',
+        strength: 1.5
+      });
+    } else if (firstDeriv[i - 1] < 0 && firstDeriv[i + 1] > 0) { // Trough
+      pivots.push({
+        index: i + 1,
+        price: regularPrices[i + 1],
+        logPrice: logPrices[i + 1],
+        type: 'LOW',
+        timestamp: new Date(marketData[i + 1].timestamp),
+        method: 'derivative',
+        strength: 1.5
+      });
+    }
+    
+    // Significant second derivative changes
+    if (i < secondDeriv.length) {
+      const stdDev = Math.sqrt(secondDeriv.reduce((sum, val) => sum + val * val, 0) / secondDeriv.length);
+      if (Math.abs(secondDeriv[i]) > stdDev * 2) {
+        const pivotIdx = i + 2; // Adjust for double derivative offset
+        if (pivotIdx < logPrices.length) {
+          if (secondDeriv[i] < 0) { // Concave down (potential high)
+            pivots.push({
+              index: pivotIdx,
+              price: regularPrices[pivotIdx],
+              logPrice: logPrices[pivotIdx],
+              type: 'HIGH',
+              timestamp: new Date(marketData[pivotIdx].timestamp),
+              method: 'derivative',
+              strength: 1.5
+            });
+          } else if (secondDeriv[i] > 0) { // Concave up (potential low)
+            pivots.push({
+              index: pivotIdx,
+              price: regularPrices[pivotIdx],
+              logPrice: logPrices[pivotIdx],
+              type: 'LOW',
+              timestamp: new Date(marketData[pivotIdx].timestamp),
+              method: 'derivative',
+              strength: 1.5
+            });
+          }
+        }
+      }
+    }
+  }
+  
+  return pivots;
+}
+
+function combineOverlappingPivots(allPivots: RawPivot[], proximityThreshold: number = 3): RawPivot[] {
+  if (allPivots.length === 0) return [];
+  
+  // Sort by index
+  allPivots.sort((a, b) => a.index - b.index);
+  
+  const combined: RawPivot[] = [];
+  let i = 0;
+  
+  while (i < allPivots.length) {
+    const currentPivot = allPivots[i];
+    const group = [currentPivot];
+    
+    // Look ahead for similar pivots
+    let j = i + 1;
+    while (j < allPivots.length) {
+      const nextPivot = allPivots[j];
+      
+      // Same type and within proximity
+      if (nextPivot.type === currentPivot.type &&
+          Math.abs(nextPivot.index - currentPivot.index) <= proximityThreshold) {
+        group.push(nextPivot);
+        j++;
+      } else {
+        break;
+      }
+    }
+    
+    // Choose best pivot from group based on log prices
+    let bestPivot: RawPivot;
+    if (group.length === 1) {
+      bestPivot = group[0];
+    } else {
+      // For highs, take highest log price; for lows, take lowest log price
+      if (currentPivot.type === 'HIGH') {
+        bestPivot = group.reduce((max, pivot) => pivot.logPrice > max.logPrice ? pivot : max);
+      } else {
+        bestPivot = group.reduce((min, pivot) => pivot.logPrice < min.logPrice ? pivot : min);
+      }
+      
+      // If multiple have same log price, take one with highest strength
+      const samePriceGroup = group.filter(p => Math.abs(p.logPrice - bestPivot.logPrice) < 1e-6);
+      if (samePriceGroup.length > 1) {
+        bestPivot = samePriceGroup.reduce((max, pivot) => pivot.strength > max.strength ? pivot : max);
+      }
+    }
+    
+    combined.push(bestPivot);
+    i = j;
+  }
+  
+  return combined;
 }
 
 interface PowerfulTrendline {
@@ -251,111 +637,320 @@ interface PowerfulTrendline {
   avgDeviation: number;
   startTime: Date;
   endTime: Date;
+  metadata?: {
+    logSlope?: number;
+    logIntercept?: number;
+    dailyGrowthRate?: number;
+    iterations?: number;
+    isLogScale?: boolean;
+  };
 }
 
-export function detectPowerfulTrendlines(pivots: PivotPoint[], tolerance: number = 0.005): PowerfulTrendline[] {
-  if (pivots.length < 3) return [];
+// Iterative best-fit trendline refinement using LOG SCALE (from notebook)
+export function detectPowerfulTrendlines(pivots: PivotPoint[], tolerancePercent: number = 0.02): PowerfulTrendline[] {
+  if (pivots.length < 2) return [];
   
-  const spatialIndex = createSpatialIndex(pivots);
   const trendlines: PowerfulTrendline[] = [];
-  const minPoints = 3;
-  const maxTrendlines = 20;
+  const maxTrendlines = 30;
+  const usedTrendlinePairs = new Set<string>();
   
-  // Sort pivots by strength and recency for better starting points
-  const sortedPivots = [...pivots].sort((a, b) => {
-    const strengthDiff = b.strength - a.strength;
-    if (Math.abs(strengthDiff) > 0.1) return strengthDiff;
-    return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
-  });
+  console.log(`🔬 LOG SCALE: Detecting trendlines with ${tolerancePercent * 100}% tolerance on ${pivots.length} pivots`);
   
-  const usedPivots = new Set<string>();
-  const maxIterations = Math.min(100, sortedPivots.length * 5);
-  let iterations = 0;
+  // Create all possible pairs, sorted by time distance (prefer longer trendlines)
+  const allPairs: Array<{ i: number, j: number, pivot1: PivotPoint, pivot2: PivotPoint, timeDist: number }> = [];
   
-  for (let i = 0; i < sortedPivots.length && trendlines.length < maxTrendlines && iterations < maxIterations; i++) {
-    const pivot1 = sortedPivots[i];
-    if (usedPivots.has(pivot1.id)) continue;
-    
-    // Find nearby pivots using spatial index for efficiency
-    const timeWindow = 30 * 24 * 60 * 60 * 1000; // 30 days
-    const candidatePivots = spatialIndex.pivots.filter(p => {
-      if (p.id === pivot1.id) return false;
-      const timeDiff = Math.abs(new Date(p.timestamp).getTime() - new Date(pivot1.timestamp).getTime());
-      return timeDiff <= timeWindow;
-    });
-    
-    for (const pivot2 of candidatePivots) {
-      if (usedPivots.has(pivot2.id)) continue;
-      iterations++;
-      
-      const timeBase = new Date(pivot2.timestamp).getTime();
-      let lineEq = calculateLineEquation([pivot1, pivot2]);
-      let connectedPoints = [pivot1, pivot2];
-      
-      // Use spatial index to find nearby points more efficiently
-      const priceThreshold = Math.max(
-        Math.abs(pivot1.price - pivot2.price) * tolerance,
-        pivot1.price * tolerance * 0.5
-      );
-      
-      for (const testPoint of candidatePivots) {
-        if (testPoint.id === pivot1.id || testPoint.id === pivot2.id) continue;
-        
-        const distance = calculateDistance(testPoint, lineEq.slope, lineEq.intercept, timeBase);
-        if (distance <= priceThreshold) {
-          connectedPoints.push(testPoint);
-        }
-      }
-      
-      if (connectedPoints.length >= minPoints) {
-        // Sort and recalculate with all points
-        connectedPoints.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-        lineEq = calculateLineEquation(connectedPoints);
-        
-        // Early termination if line quality is poor
-        if (lineEq.rSquared < 0.3) continue;
-        
-        const avgDeviation = connectedPoints.reduce((sum, point) => {
-          return sum + calculateDistance(point, lineEq.slope, lineEq.intercept, timeBase);
-        }, 0) / connectedPoints.length;
-        
-        const highCount = connectedPoints.filter(p => p.type === 'HIGH').length;
-        const lowCount = connectedPoints.filter(p => p.type === 'LOW').length;
-        const isUpwardSloping = lineEq.slope > 0;
-        
-        let lineType: 'SUPPORT' | 'RESISTANCE';
-        if (highCount > lowCount) {
-          lineType = 'RESISTANCE';
-        } else if (lowCount > highCount) {
-          lineType = 'SUPPORT';
-        } else {
-          lineType = isUpwardSloping ? 'SUPPORT' : 'RESISTANCE';
-        }
-        
-        const strength = connectedPoints.length; // Actual count of pivot points crossed
-        
-        const trendline: PowerfulTrendline = {
-          id: uuidv4(),
-          points: connectedPoints,
-          slope: lineEq.slope,
-          intercept: lineEq.intercept,
-          strength,
-          type: lineType,
-          rSquared: lineEq.rSquared,
-          avgDeviation,
-          startTime: new Date(connectedPoints[0].timestamp),
-          endTime: new Date(connectedPoints[connectedPoints.length - 1].timestamp)
-        };
-        
-        trendlines.push(trendline);
-        connectedPoints.forEach(p => usedPivots.add(p.id));
-      }
+  for (let i = 0; i < pivots.length; i++) {
+    for (let j = i + 1; j < pivots.length; j++) {
+      const timeDist = Math.abs(new Date(pivots[j].timestamp).getTime() - new Date(pivots[i].timestamp).getTime());
+      allPairs.push({
+        i, j,
+        pivot1: pivots[i],
+        pivot2: pivots[j],
+        timeDist
+      });
     }
   }
   
-  // Remove duplicates and sort by quality
-  const uniqueLines = removeDuplicateTrendlines(trendlines);
-  return uniqueLines.slice(0, maxTrendlines);
+  // Sort by time distance to prefer longer trendlines first
+  allPairs.sort((a, b) => b.timeDist - a.timeDist);
+  
+  console.log(`🔬 Created ${allPairs.length} potential trendline pairs (sorted by time distance)`);
+  
+  let processedPairs = 0;
+  let skippedPairs = 0;
+  
+  for (const pair of allPairs) {
+    processedPairs++;
+    
+    // Check if this pair is already used in an existing trendline
+    const pairKey = `${Math.min(pair.i, pair.j)}-${Math.max(pair.i, pair.j)}`;
+    if (usedTrendlinePairs.has(pairKey)) {
+      skippedPairs++;
+      continue;
+    }
+    
+    // Find iterative trendline starting with this pair using LOG SCALE
+    const result = findIterativeTrendlineLog(pair.pivot1, pair.pivot2, pivots, tolerancePercent);
+    
+    if (result && result.strength >= 2) { // Must connect at least 2 points
+      const trendline: PowerfulTrendline = {
+        id: uuidv4(),
+        points: result.connectedPoints,
+        slope: result.regularSlope, // Store regular slope for compatibility
+        intercept: result.regularIntercept, // Store regular intercept
+        strength: result.strength,
+        type: result.type,
+        rSquared: result.rSquared,
+        avgDeviation: result.avgDeviation,
+        startTime: new Date(result.connectedPoints[0].timestamp),
+        endTime: new Date(result.connectedPoints[result.connectedPoints.length - 1].timestamp),
+        // Store log scale data in metadata
+        metadata: {
+          logSlope: result.logSlope,
+          logIntercept: result.logIntercept,
+          dailyGrowthRate: result.dailyGrowthRate,
+          iterations: result.iterations,
+          isLogScale: true
+        }
+      };
+      
+      trendlines.push(trendline);
+      
+      // Mark pairs that use ANY TWO points from this trendline's connected points
+      const connectedIndices: number[] = [];
+      for (const point of result.connectedPoints) {
+        const idx = pivots.findIndex(p => p.id === point.id);
+        if (idx !== -1) connectedIndices.push(idx);
+      }
+      
+      // Remove pairs that use any two points from this trendline
+      let newRemovedPairs = 0;
+      for (let pi = 0; pi < connectedIndices.length; pi++) {
+        for (let pj = pi + 1; pj < connectedIndices.length; pj++) {
+          const pairToRemove = `${Math.min(connectedIndices[pi], connectedIndices[pj])}-${Math.max(connectedIndices[pi], connectedIndices[pj])}`;
+          if (!usedTrendlinePairs.has(pairToRemove)) {
+            usedTrendlinePairs.add(pairToRemove);
+            newRemovedPairs++;
+          }
+        }
+      }
+      
+      if (trendlines.length <= 10) {
+        console.log(`🔬 Trendline #${trendlines.length}: ${result.strength} points, R²=${result.rSquared.toFixed(3)}, growth=${result.dailyGrowthRate.toFixed(4)}%/day, ${result.iterations} iterations`);
+      }
+      
+      // Stop if we have enough trendlines
+      if (trendlines.length >= maxTrendlines) break;
+    }
+  }
+  
+  // Sort by strength and R-squared
+  trendlines.sort((a, b) => (b.strength * b.rSquared) - (a.strength * a.rSquared));
+  
+  console.log(`🔬 Found ${trendlines.length} LOG SCALE trendlines using iterative refinement`);
+  console.log(`🔬 Processed ${processedPairs} pairs, skipped ${skippedPairs} internal pairs`);
+  
+  if (trendlines.length > 0) {
+    const strengths = trendlines.map(tl => tl.strength);
+    const growthRates = trendlines.map(tl => tl.metadata?.dailyGrowthRate || 0);
+    
+    console.log(`🔬 Strength range: ${Math.min(...strengths)} - ${Math.max(...strengths)} connected points`);
+    console.log(`🔬 Average strength: ${(strengths.reduce((a, b) => a + b, 0) / strengths.length).toFixed(1)} points`);
+    console.log(`🔬 Growth rate range: ${Math.min(...growthRates).toFixed(4)}% - ${Math.max(...growthRates).toFixed(4)}% per day`);
+  }
+  
+  return trendlines.slice(0, maxTrendlines);
+}
+
+// Helper function for iterative trendline refinement using LOG SCALE
+function findIterativeTrendlineLog(
+  pivot1: PivotPoint, 
+  pivot2: PivotPoint, 
+  allPivots: PivotPoint[], 
+  tolerancePercent: number
+): {
+  connectedPoints: PivotPoint[],
+  strength: number,
+  logSlope: number,
+  logIntercept: number,
+  regularSlope: number,
+  regularIntercept: number,
+  dailyGrowthRate: number,
+  rSquared: number,
+  avgDeviation: number,
+  iterations: number,
+  type: 'SUPPORT' | 'RESISTANCE'
+} | null {
+  
+  // Start with the initial two points
+  const currentPoints = [pivot1, pivot2];
+  const logTolerance = Math.log(1 + tolerancePercent); // Convert percentage to log tolerance
+  const maxIterations = 100;
+  let iteration = 0;
+  
+  // Helper to get log price from pivot metadata or calculate it
+  const getLogPrice = (pivot: PivotPoint): number => {
+    if (pivot.metadata && typeof pivot.metadata.logPrice === 'number') {
+      return pivot.metadata.logPrice;
+    }
+    return Math.log(pivot.price);
+  };
+  
+  // Helper to convert points to x,y coordinates using LOG SCALE
+  const pointsToXYLog = (points: PivotPoint[]) => {
+    const baseTime = new Date(pivot1.timestamp).getTime();
+    const xVals = points.map(p => (new Date(p.timestamp).getTime() - baseTime) / (1000 * 60 * 60 * 24));
+    const yVals = points.map(p => getLogPrice(p)); // Use LOG prices for trendline fitting
+    return { xVals, yVals };
+  };
+  
+  while (iteration < maxIterations) {
+    iteration++;
+    
+    // Calculate current best-fit line using LOG PRICES
+    const { xVals, yVals } = pointsToXYLog(currentPoints);
+    
+    if (xVals.length < 2) break;
+    
+    // Calculate linear regression on LOG SCALE
+    const n = xVals.length;
+    const sumX = xVals.reduce((sum, x) => sum + x, 0);
+    const sumY = yVals.reduce((sum, y) => sum + y, 0);
+    const sumXY = xVals.reduce((sum, x, i) => sum + x * yVals[i], 0);
+    const sumXX = xVals.reduce((sum, x) => sum + x * x, 0);
+    const sumYY = yVals.reduce((sum, y) => sum + y * y, 0);
+    
+    const logSlope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
+    const logIntercept = (sumY - logSlope * sumX) / n;
+    
+    // Calculate R-squared
+    const meanY = sumY / n;
+    const ssRes = yVals.reduce((sum, y, i) => {
+      const predicted = logSlope * xVals[i] + logIntercept;
+      return sum + Math.pow(y - predicted, 2);
+    }, 0);
+    const ssTot = yVals.reduce((sum, y) => sum + Math.pow(y - meanY, 2), 0);
+    const rSquared = ssTot === 0 ? 1 : 1 - (ssRes / ssTot);
+    
+    // Find additional points within tolerance of this best-fit line
+    const newPoints: PivotPoint[] = [];
+    const baseTime = new Date(pivot1.timestamp).getTime();
+    
+    for (const testPivot of allPivots) {
+      // Skip if already in current points
+      if (currentPoints.some(p => p.id === testPivot.id)) continue;
+      
+      const xPivot = (new Date(testPivot.timestamp).getTime() - baseTime) / (1000 * 60 * 60 * 24);
+      const expectedLogY = logSlope * xPivot + logIntercept;
+      const actualLogY = getLogPrice(testPivot);
+      
+      // Check if within log tolerance (proper percentage tolerance)
+      const logDifference = Math.abs(expectedLogY - actualLogY);
+      if (logDifference <= logTolerance) {
+        newPoints.push(testPivot);
+      }
+    }
+    
+    // If no new points found, we're done
+    if (newPoints.length === 0) break;
+    
+    // Add new points and continue iteration
+    currentPoints.push(...newPoints);
+  }
+  
+  // Final calculation with all points
+  if (currentPoints.length >= 2) {
+    const { xVals, yVals } = pointsToXYLog(currentPoints);
+    const n = xVals.length;
+    const sumX = xVals.reduce((sum, x) => sum + x, 0);
+    const sumY = yVals.reduce((sum, y) => sum + y, 0);
+    const sumXY = xVals.reduce((sum, x, i) => sum + x * yVals[i], 0);
+    const sumXX = xVals.reduce((sum, x) => sum + x * x, 0);
+    
+    const logSlope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
+    const logIntercept = (sumY - logSlope * sumX) / n;
+    
+    // Calculate R-squared
+    const meanY = sumY / n;
+    const ssRes = yVals.reduce((sum, y, i) => {
+      const predicted = logSlope * xVals[i] + logIntercept;
+      return sum + Math.pow(y - predicted, 2);
+    }, 0);
+    const ssTot = yVals.reduce((sum, y) => sum + Math.pow(y - meanY, 2), 0);
+    const rSquared = ssTot === 0 ? 1 : 1 - (ssRes / ssTot);
+    
+    // Calculate daily growth rate from log slope
+    const dailyGrowthRate = (Math.exp(logSlope) - 1) * 100;
+    
+    // Calculate average deviation in log space
+    const baseTime = new Date(pivot1.timestamp).getTime();
+    const avgDeviation = currentPoints.reduce((sum, point) => {
+      const xPoint = (new Date(point.timestamp).getTime() - baseTime) / (1000 * 60 * 60 * 24);
+      const expectedLogY = logSlope * xPoint + logIntercept;
+      const actualLogY = getLogPrice(point);
+      return sum + Math.abs(expectedLogY - actualLogY);
+    }, 0) / currentPoints.length;
+    
+    // Convert log scale back to regular scale for compatibility
+    // Since log scale trendlines are exponential in regular space, we'll use two points to calculate
+    // an approximate linear slope that represents the average rate of change
+    const startTime = new Date(currentPoints[0].timestamp).getTime();
+    const endTime = new Date(currentPoints[currentPoints.length - 1].timestamp).getTime();
+    const timeDiffDays = (endTime - startTime) / (1000 * 60 * 60 * 24);
+    
+    let regularSlope: number;
+    let regularIntercept: number;
+    
+    if (timeDiffDays > 0) {
+      // Calculate prices at start and end using the log equation
+      const startLogPrice = logSlope * 0 + logIntercept; // At day 0
+      const endLogPrice = logSlope * timeDiffDays + logIntercept;
+      
+      const startRegularPrice = Math.exp(startLogPrice);
+      const endRegularPrice = Math.exp(endLogPrice);
+      
+      // Calculate regular slope as price change per day
+      regularSlope = (endRegularPrice - startRegularPrice) / timeDiffDays;
+      regularIntercept = startRegularPrice;
+    } else {
+      // Fallback for single point or zero time difference
+      regularSlope = 0;
+      regularIntercept = Math.exp(logIntercept);
+    }
+    
+    // Determine trendline type based on slope and point types
+    const highCount = currentPoints.filter(p => p.type === 'HIGH').length;
+    const lowCount = currentPoints.filter(p => p.type === 'LOW').length;
+    const isUpward = logSlope > 0;
+    
+    let lineType: 'SUPPORT' | 'RESISTANCE';
+    if (highCount > lowCount) {
+      lineType = 'RESISTANCE';
+    } else if (lowCount > highCount) {
+      lineType = 'SUPPORT';
+    } else {
+      lineType = isUpward ? 'SUPPORT' : 'RESISTANCE';
+    }
+    
+    // Sort points by time
+    currentPoints.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    
+    return {
+      connectedPoints: currentPoints,
+      strength: currentPoints.length,
+      logSlope,
+      logIntercept,
+      regularSlope,
+      regularIntercept,
+      dailyGrowthRate,
+      rSquared,
+      avgDeviation,
+      iterations: iteration,
+      type: lineType
+    };
+  }
+  
+  return null;
 }
 
 function removeDuplicateTrendlines(trendlines: PowerfulTrendline[]): PowerfulTrendline[] {
@@ -384,6 +979,7 @@ function removeDuplicateTrendlines(trendlines: PowerfulTrendline[]): PowerfulTre
   return uniqueLines;
 }
 
+// Updated to work with LOG SCALE calculations
 function calculateDistance(point: PivotPoint, slope: number, intercept: number, timeBase: number): number {
   const timeMs = new Date(point.timestamp).getTime();
   const x = (timeMs - timeBase) / (1000 * 60 * 60 * 24); // Convert to days
@@ -391,14 +987,16 @@ function calculateDistance(point: PivotPoint, slope: number, intercept: number, 
   return Math.abs(point.price - expectedPrice);
 }
 
+// Legacy function for compatibility - now uses log scale internally
 function calculateLineEquation(points: PivotPoint[]): { slope: number; intercept: number; rSquared: number } {
   if (points.length < 2) return { slope: 0, intercept: 0, rSquared: 0 };
   
   const timeBase = new Date(points[0].timestamp).getTime();
   
+  // Use log prices for better trend analysis
   const coords = points.map(p => ({
     x: (new Date(p.timestamp).getTime() - timeBase) / (1000 * 60 * 60 * 24),
-    y: p.price
+    y: p.metadata?.logPrice || Math.log(p.price) // Use log price if available
   }));
   
   const n = coords.length;
@@ -471,8 +1069,12 @@ export function calculateTrendCloud(
     }
     
     // Calculate trendlines from 1-year data
+    console.log(`🔬 LOG SCALE: Using ultra-enhanced pivot detection with 6 methods`);
     const pivots = detectClientSidePivots(lookbackData, timeframe);
-    const trendlines = detectPowerfulTrendlines(pivots, 0.005);
+    console.log(`🔬 LOG SCALE: Found ${pivots.length} pivots using enhanced detection`);
+    console.log(`🔬 LOG SCALE: Detecting powerful trendlines with iterative refinement`);
+    const trendlines = detectPowerfulTrendlines(pivots, 0.02); // Use 2% tolerance like notebook
+    console.log(`🔬 LOG SCALE: Found ${trendlines.length} powerful trendlines`);
     
     const targetDate = new Date(calculationDate.getTime() + daysAhead * 24 * 60 * 60 * 1000);
     
@@ -548,15 +1150,13 @@ export function calculateTrendCloud(
     const priceGroups = new Map<number, typeof projections>();
     const convergenceThreshold = currentPrice * 0.05; // 5% of current price
     
-    console.log(`🔥 GROUPING: threshold=${convergenceThreshold.toFixed(2)} (5% of ${currentPrice.toFixed(2)})`);
+    console.log(`🔬 LOG SCALE: Grouping convergences with ${convergenceThreshold.toFixed(2)} threshold (5% of ${currentPrice.toFixed(2)})`);
     
     for (const projection of projections) {
-      console.log(`🔥 Processing projection: ${projection.projectedPrice.toFixed(2)} (slope: ${projection.trendline.slope.toFixed(4)})`);
       let foundGroup = false;
       for (const [groupPrice, group] of priceGroups) {
         const distance = Math.abs(projection.projectedPrice - groupPrice);
         if (distance <= convergenceThreshold) {
-          console.log(`🔥 Added to existing group at ${groupPrice.toFixed(2)} (distance: ${distance.toFixed(2)})`);
           group.push(projection);
           foundGroup = true;
           break;
@@ -564,7 +1164,6 @@ export function calculateTrendCloud(
       }
       
       if (!foundGroup) {
-        console.log(`🔥 Created new group at ${projection.projectedPrice.toFixed(2)}`);
         priceGroups.set(projection.projectedPrice, [projection]);
       }
     }
@@ -572,6 +1171,7 @@ export function calculateTrendCloud(
     console.log(`🔥 GROUPS CREATED: ${priceGroups.size} price groups from ${projections.length} projections`);
     
     // Create convergence zones ONLY from groups with multiple trendlines (true convergence)
+    convergenceZones.length = 0; // Clear existing zones
     for (const [_, group] of priceGroups) {
       if (group.length >= 2) { // Require at least 2 trendlines for convergence
         const avgPrice = group.reduce((sum, p) => sum + p.projectedPrice, 0) / group.length;

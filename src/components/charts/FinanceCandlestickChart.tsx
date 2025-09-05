@@ -4,6 +4,18 @@ import React, { useMemo, useState, useCallback, useRef, useEffect } from 'react'
 import { format } from 'date-fns';
 import { MarketData, PivotPoint, TrendLine, ConvergenceZone, Timeframe } from '@/types';
 import { TrendCloudData } from '@/lib/trendCloud';
+import { MovingAverageData, MA_PERIODS, getMAColor } from '@/lib/movingAverages';
+
+interface OptimizedLevel {
+  id: string;
+  price: number;
+  type: 'Support' | 'Resistance';
+  weight: number;
+  strength: number;
+  color: string;
+  width: number;
+  source: string;
+}
 
 interface FinanceCandlestickChartProps {
   data: MarketData[];
@@ -16,6 +28,8 @@ interface FinanceCandlestickChartProps {
     support: { S1: number; S2: number; S3: number };
   } | null;
   trendClouds?: TrendCloudData[];
+  optimizedLevels?: OptimizedLevel[];
+  movingAveragesData?: MovingAverageData[];
   timeframe?: Timeframe;
   className?: string;
   showPivots?: boolean;
@@ -26,6 +40,8 @@ interface FinanceCandlestickChartProps {
   showPivotLevels?: boolean;
   showCandles?: boolean;
   showTrendCloud?: boolean;
+  showOptimizedLevels?: boolean;
+  showMovingAverages?: boolean;
   onViewportChange?: (viewport: { startTime: number; endTime: number }) => void;
 }
 
@@ -36,6 +52,8 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
   convergenceZones = [],
   traditionalPivots = null,
   trendClouds = [],
+  optimizedLevels = [],
+  movingAveragesData = [],
   timeframe,
   className = '',
   showPivots = true,
@@ -46,6 +64,8 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
   showPivotLevels = false,
   showCandles = true,
   showTrendCloud = false,
+  showOptimizedLevels = false,
+  showMovingAverages = false,
   onViewportChange
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -255,11 +275,26 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
         visible: true
       });
 
-      // Calculate current cursor price from Y position
-      const priceRange = chartData.priceRange.max - chartData.priceRange.min;
+      // Calculate current cursor price from Y position using inverse of priceToY (logarithmic scale)
       const plotHeight = dimensions.height - margin.top - margin.bottom;
       const yInPlot = mouseY - margin.top;
-      const currentPrice = chartData.priceRange.max - (yInPlot / plotHeight) * priceRange;
+      
+      // Clamp yInPlot to valid range
+      const clampedYInPlot = Math.max(0, Math.min(plotHeight, yInPlot));
+      
+      // Convert Y position back to price using inverse logarithmic transformation
+      const { min, max } = chartData.priceRange;
+      let currentPrice;
+      if (min > 0) {
+        // Inverse of logarithmic scale
+        const logMin = Math.log(min);
+        const logMax = Math.log(max);
+        const logPrice = logMax - (clampedYInPlot / plotHeight) * (logMax - logMin);
+        currentPrice = Math.exp(logPrice);
+      } else {
+        // Fallback to linear scale if min is 0 or negative
+        currentPrice = max - (clampedYInPlot / plotHeight) * (max - min);
+      }
 
       // Find the candle under the mouse cursor
       const pixelsPerCandle = plotWidth / chartData.candles.length;
@@ -272,7 +307,7 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
           y: mouseY - 10, // Offset above cursor
           visible: true,
           candle: candle,
-          price: currentPrice
+          price: candle.close // Use actual candle close price instead of cursor position
         });
       } else {
         // Show cursor price when not over a candle
@@ -331,83 +366,102 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
     return ticks;
   }, [chartData.priceRange]);
 
-  // Generate X-axis ticks based on month boundaries in the current viewport
+  // Generate X-axis ticks based on month boundaries in the current viewport + extended range
   const xTicks = useMemo(() => {
     if (!chartData.candles || chartData.candles.length === 0) return [];
     
     const ticks = [];
     const seenMonths = new Set<string>();
+    const viewportDays = viewport.endIndex - viewport.startIndex;
     
-    // Look through the visible candles for the first day of each month
+    // Look through the visible candles for month/year boundaries
     for (let i = 0; i < chartData.candles.length; i++) {
       const candle = chartData.candles[i];
       if (candle) {
         const date = new Date(candle.timestamp);
-        const monthKey = `${date.getFullYear()}-${date.getMonth()}`;
+        const month = date.getMonth();
+        const year = date.getFullYear();
         
-        // If this is the first time we see this month, check if it's the first day or close to it
-        if (!seenMonths.has(monthKey)) {
-          const dayOfMonth = date.getDate();
+        // For different viewport sizes, show different granularities
+        let shouldAddTick = false;
+        let tickKey = '';
+        
+        if (viewportDays <= 90) {
+          // For periods <= 3 months: show every month
+          tickKey = `${year}-${month}`;
+          shouldAddTick = !seenMonths.has(tickKey);
+        } else if (viewportDays <= 730) {
+          // For periods <= 2 years: show every 3 months (quarters)
+          const quarter = Math.floor(month / 3) * 3; // 0, 3, 6, 9
+          tickKey = `${year}-Q${Math.floor(quarter / 3)}`;
+          shouldAddTick = !seenMonths.has(tickKey) && month === quarter;
+        } else {
+          // For periods > 2 years: show only January of each year
+          tickKey = `${year}`;
+          shouldAddTick = !seenMonths.has(tickKey) && month === 0; // January
+        }
+        
+        if (shouldAddTick) {
+          seenMonths.add(tickKey);
           
-          // Consider it a month boundary if it's within the first 3 days of the month
-          // or if it's the first occurrence of this month in our dataset
-          if (dayOfMonth <= 3) {
-            seenMonths.add(monthKey);
-            const viewportDays = viewport.endIndex - viewport.startIndex;
-            
-            ticks.push({
-              x: indexToX(i),
-              label: (() => {
-                // Smart date formatting based on viewport size
-                if (viewportDays <= 30) {
-                  return format(date, 'MMM dd'); // Show month and day for short periods
-                } else if (viewportDays <= 365) {
-                  return format(date, 'MMM yyyy'); // Show month/year for medium periods  
-                } else {
-                  return format(date, 'MM/yy'); // Show MM/YY for long periods
-                }
-              })()
-            });
-          }
+          ticks.push({
+            x: indexToX(i),
+            label: (() => {
+              // Smart date formatting based on viewport size
+              if (viewportDays <= 30) {
+                return format(date, 'MMM dd'); // Show month and day for short periods
+              } else if (viewportDays <= 365) {
+                return format(date, 'MMM yyyy'); // Show month/year for medium periods
+              } else if (viewportDays <= 730) {
+                return format(date, 'MMM yyyy'); // Show month/year for 2 year periods
+              } else {
+                return format(date, 'yyyy'); // Show only year for long periods
+              }
+            })()
+          });
         }
       }
     }
     
-    // If we don't have enough month-based ticks, add some evenly spaced ones
+    
+    // If we don't have enough ticks, add some evenly spaced ones
     if (ticks.length < 3) {
+      const { min, max } = chartData.timeRange;
       const tickCount = Math.min(6, chartData.candles.length);
+      
       for (let i = 0; i < tickCount; i++) {
-        const index = Math.floor((i / (tickCount - 1)) * (chartData.candles.length - 1));
-        const candle = chartData.candles[index];
-        if (candle) {
-          const date = new Date(candle.timestamp);
-          const viewportDays = viewport.endIndex - viewport.startIndex;
-          
-          // Avoid duplicates
-          const x = indexToX(index);
-          const isDuplicate = ticks.some(tick => Math.abs(tick.x - x) < 20);
-          
-          if (!isDuplicate) {
-            ticks.push({
-              x: x,
-              label: (() => {
-                if (viewportDays <= 30) {
-                  return format(date, 'MMM dd');
-                } else if (viewportDays <= 365) {
-                  return format(date, 'MMM yyyy');
-                } else {
-                  return format(date, 'MM/yy');
-                }
-              })()
-            });
-          }
+        const timestamp = min + (i / (tickCount - 1)) * (max - min);
+        const date = new Date(timestamp);
+        const x = timeToX(timestamp);
+        
+        // Avoid duplicates
+        const isDuplicate = ticks.some(tick => Math.abs(tick.x - x) < 20);
+        
+        if (!isDuplicate) {
+          ticks.push({
+            x: x,
+            label: (() => {
+              if (viewportDays <= 30) {
+                return format(date, 'MMM dd');
+              } else if (viewportDays <= 365) {
+                return format(date, 'MMM yyyy');
+              } else {
+                return format(date, 'MM/yy');
+              }
+            })()
+          });
         }
       }
     }
     
-    // Sort ticks by x position
-    return ticks.sort((a, b) => a.x - b.x);
-  }, [chartData.candles, viewport, indexToX]);
+    // Sort ticks by x position and remove duplicates
+    const uniqueTicks = ticks.filter((tick, index, arr) => 
+      index === 0 || Math.abs(tick.x - arr[index - 1].x) > 20
+    );
+    
+    
+    return uniqueTicks.sort((a, b) => a.x - b.x);
+  }, [chartData.candles, chartData.timeRange, viewport, indexToX, timeToX]);
 
   // Helper functions for trend analysis elements
   const getLineColorAndThickness = (line: TrendLine, allLines: TrendLine[]) => {
@@ -490,46 +544,132 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
 
       {/* Time Period Selection */}
       <div className="px-4 py-2">
-        <div className="flex gap-2 justify-center">
-          {[
-            { label: '1D', days: 1 },
-            { label: '1W', days: 7 },
-            { label: '1M', days: 30 },
-            { label: '3M', days: 90 },
-            { label: '6M', days: 180 },
-            { label: '1Y', days: 252 },
-            { label: 'ALL', days: -1 }
-          ].map(period => {
-            const handlePeriodClick = () => {
-              if (period.days === -1) {
-                // Show all data
-                setViewport({ startIndex: 0, endIndex: data?.length || 100 });
-              } else {
-                // Show last N trading days
-                const endIndex = data?.length || 100;
-                const startIndex = Math.max(0, endIndex - period.days);
-                setViewport({ startIndex, endIndex });
+        <div className="flex gap-2 justify-between items-center">
+          {/* Go to Start button */}
+          <button
+            onClick={() => {
+              const defaultView = Math.min(100, data?.length || 100);
+              setViewport({ 
+                startIndex: 0, 
+                endIndex: defaultView 
+              });
+            }}
+            className="px-4 py-1 text-sm rounded bg-orange-600 text-white hover:bg-orange-700 transition-colors font-medium mr-4"
+          >
+            Go to Start
+          </button>
+          
+          {/* Main timeframe buttons */}
+          <div className="flex gap-2 justify-center flex-1">
+            {[
+              { label: '1W', days: 7 },
+              { label: '1M', days: 30 },
+              { label: '3M', days: 90 },
+              { label: '6M', days: 180 },
+              { label: '1Y', days: 252 },
+              { label: '3Y', days: 252 * 3 },
+              { label: '5Y', days: 252 * 5 },
+              { label: '10Y', days: 252 * 10 },
+              { label: 'ALL', days: -1 }
+            ].map(period => {
+              const handlePeriodClick = () => {
+                if (period.days === -1) {
+                  // Show all data
+                  setViewport({ startIndex: 0, endIndex: data?.length || 100 });
+                } else {
+                  // PRESERVE CURRENT VIEW POSITION: Calculate timeframe relative to current center
+                  const currentCenter = (viewport.startIndex + viewport.endIndex) / 2;
+                  const currentCenterTime = data && data[Math.floor(currentCenter)] ? 
+                    getTimestamp(data[Math.floor(currentCenter)].timestamp) : Date.now();
+                  
+                  // Find the index closest to current center time
+                  let centerIndex = Math.floor(currentCenter);
+                  if (data && data.length > 0) {
+                    let closestDistance = Infinity;
+                    for (let i = 0; i < data.length; i++) {
+                      const distance = Math.abs(getTimestamp(data[i].timestamp) - currentCenterTime);
+                      if (distance < closestDistance) {
+                        closestDistance = distance;
+                        centerIndex = i;
+                      }
+                    }
+                  }
+                  
+                  // Calculate new viewport centered on current position
+                  const halfPeriod = Math.floor(period.days / 2);
+                  const startIndex = Math.max(0, centerIndex - halfPeriod);
+                  const endIndex = Math.min(data?.length || 100, centerIndex + halfPeriod);
+                  
+                  setViewport({ startIndex, endIndex });
+                }
+              };
+            
+            // Calculate which period is closest to current viewport size
+            const currentViewportSize = viewport.endIndex - viewport.startIndex;
+            const periods = [
+              { label: '1W', days: 7 },
+              { label: '1M', days: 30 },
+              { label: '3M', days: 90 },
+              { label: '6M', days: 180 },
+              { label: '1Y', days: 252 },
+              { label: '3Y', days: 252 * 3 },
+              { label: '5Y', days: 252 * 5 },
+              { label: '10Y', days: 252 * 10 },
+              { label: 'ALL', days: -1 }
+            ];
+            
+            // Determine if this period should be highlighted (only closest match)
+            let isActive = false;
+            
+            if (period.days === -1) {
+              // Special case for ALL - active when showing all data
+              isActive = viewport.startIndex === 0 && viewport.endIndex === (data?.length || 100);
+            } else {
+              // Find the closest matching period
+              let closestPeriod = periods[0];
+              let smallestDifference = Math.abs(currentViewportSize - periods[0].days);
+              
+              for (const p of periods) {
+                if (p.days === -1) continue; // Skip ALL period
+                const difference = Math.abs(currentViewportSize - p.days);
+                if (difference < smallestDifference) {
+                  smallestDifference = difference;
+                  closestPeriod = p;
+                }
               }
-            };
+              
+              isActive = period.label === closestPeriod.label;
+            }
             
-            const isActive = period.days === -1 
-              ? viewport.startIndex === 0 && viewport.endIndex === (data?.length || 100)
-              : viewport.endIndex - viewport.startIndex <= period.days * 1.1;
-            
-            return (
-              <button
-                key={period.label}
-                onClick={handlePeriodClick}
-                className={`px-3 py-1 text-sm rounded transition-colors ${
-                  isActive 
-                    ? 'bg-blue-600 text-white' 
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
-              >
-                {period.label}
-              </button>
-            );
-          })}
+              return (
+                <button
+                  key={period.label}
+                  onClick={handlePeriodClick}
+                  className={`px-3 py-1 text-sm rounded transition-colors ${
+                    isActive 
+                      ? 'bg-blue-600 text-white' 
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  {period.label}
+                </button>
+              );
+            })}
+          </div>
+          
+          {/* Go to Latest button */}
+          <button
+            onClick={() => {
+              const defaultView = Math.min(100, data?.length || 100);
+              setViewport({ 
+                startIndex: Math.max(0, (data?.length || 100) - defaultView), 
+                endIndex: data?.length || 100 
+              });
+            }}
+            className="px-4 py-1 text-sm rounded bg-green-600 text-white hover:bg-green-700 transition-colors font-medium ml-4"
+          >
+            Go to Latest
+          </button>
         </div>
       </div>
 
@@ -553,6 +693,7 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
             </pattern>
           </defs>
           <rect width={plotWidth} height={plotHeight} x={margin.left} y={margin.top} fill="url(#grid)" />
+
 
           {/* Convergence zones */}
           {showConvergence && convergenceZones.map((zone, idx) => {
@@ -659,198 +800,188 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
             </>
           )}
 
-          {/* Trend Clouds */}
-          {showTrendCloud && (() => {
-            // Show ALL trend clouds without any filtering or limiting
-            const visibleClouds = trendClouds.filter(cloud => {
-              const targetTime = getTimestamp(cloud.targetDate);
-              const targetX = timeToX(targetTime);
-              return targetX >= margin.left && targetX <= chartWidth - margin.right;
-            });
+          {/* Optimized Support/Resistance Levels */}
+          {showOptimizedLevels && optimizedLevels.map((level) => (
+            <g key={level.id}>
+              <line
+                x1={margin.left}
+                y1={priceToY(level.price)}
+                x2={margin.left + plotWidth}
+                y2={priceToY(level.price)}
+                stroke={level.color}
+                strokeWidth={level.width}
+                strokeOpacity={0.8}
+                strokeDasharray="2 2"
+              />
+            </g>
+          ))}
+
+          {/* Continuous Trend Cloud Visualization */}
+          {showTrendCloud && trendClouds && Array.isArray(trendClouds) && trendClouds.length > 0 && (() => {
+            // Get the chart time boundaries for filtering
+            const firstCandle = chartData.candles[viewport.startIndex];
+            const lastCandle = chartData.candles[viewport.endIndex - 1];
+            const chartStartTime = firstCandle?.timestamp ? getTimestamp(firstCandle.timestamp) : 0;
+            const chartEndTime = lastCandle?.timestamp ? getTimestamp(lastCandle.timestamp) : Date.now();
             
-            console.log(`🎯 RENDERING ALL ${visibleClouds.length} trend clouds (no filtering applied)`);
-
-            if (visibleClouds.length === 0) return null;
-
-            // Process each cloud to create proper cloud formations
-            const allCloudShapes: Array<{
-              x: number,
-              y: number,
-              weight: number,
-              confidence: number,
-              radius: number,
-              opacity: number,
-              gradientId: string
-            }> = [];
-
-            visibleClouds.forEach(cloud => {
-              const targetTime = getTimestamp(cloud.targetDate);
-              const targetX = timeToX(targetTime);
-
-              // If cloud has very few points, create a synthetic cloud at the peak price
-              if (cloud.cloudPoints.length < 3) {
-                const peakY = priceToY(cloud.summary.peakPrice);
-                // Use softmax-weighted size and opacity
-                const normalizedWeight = Math.min(cloud.summary.totalWeight / 100, 1); // Normalize by total weight
-                const baseRadius = Math.max(15, normalizedWeight * 40); // Size based on convergence strength
-                const baseOpacity = Math.max(0.3, normalizedWeight * 0.8); // Opacity based on softmax weight
-                const gradientId = 'trendCloudGradient';
-
-                // Create a more visible cloud formation for sparse data
-                const syntheticPuffs = [
-                  // Main central puff - much larger and more visible
-                  { offsetX: 0, offsetY: 0, sizeMultiplier: 1.5, opacityMultiplier: 0.8 },
-                  // Surrounding puffs
-                  { offsetX: 30, offsetY: -15, sizeMultiplier: 1.2, opacityMultiplier: 0.6 },
-                  { offsetX: -25, offsetY: 10, sizeMultiplier: 1.1, opacityMultiplier: 0.6 },
-                  { offsetX: 40, offsetY: 8, sizeMultiplier: 0.9, opacityMultiplier: 0.5 },
-                  { offsetX: -35, offsetY: -20, sizeMultiplier: 0.8, opacityMultiplier: 0.4 },
-                  { offsetX: 0, offsetY: 25, sizeMultiplier: 1.0, opacityMultiplier: 0.5 },
-                  { offsetX: 0, offsetY: -30, sizeMultiplier: 0.9, opacityMultiplier: 0.4 },
-                  // Edge wisps
-                  { offsetX: 50, offsetY: -5, sizeMultiplier: 0.6, opacityMultiplier: 0.3 },
-                  { offsetX: -45, offsetY: 30, sizeMultiplier: 0.5, opacityMultiplier: 0.3 },
-                  { offsetX: 15, offsetY: 40, sizeMultiplier: 0.4, opacityMultiplier: 0.2 }
-                ];
-
-                syntheticPuffs.forEach(puff => {
-                  allCloudShapes.push({
-                    x: targetX + puff.offsetX,
-                    y: peakY + puff.offsetY,
-                    weight: cloud.summary.totalWeight,
-                    confidence: cloud.summary.confidenceScore,
-                    radius: baseRadius * puff.sizeMultiplier,
-                    opacity: baseOpacity * puff.opacityMultiplier,
-                    gradientId
-                  });
-                });
-              } else {
-                // For clouds with multiple points, create puffs around each point
-                cloud.cloudPoints.forEach(point => {
-                  const pointY = priceToY(point.priceLevel);
-                  // Use the actual density value from softmax calculation with more dramatic differences
-                  const baseRadius = Math.max(20, point.density * 60); // Larger size range
-                  const baseOpacity = point.density; // Use density directly without minimum floor
-                  
-                  console.log(`🎨 CHART: Point density=${point.density.toFixed(3)}, weight=${point.weight.toFixed(1)}, baseRadius=${baseRadius.toFixed(1)}, baseOpacity=${baseOpacity.toFixed(3)}`);
-                  
-                  // Use unified gradient for consistency
-                  const gradientId = 'trendCloudGradient';
-
-                  // Reduced cloud puffs for clearer differentiation
-                  const cloudPuffs = [
-                    // Main central puff - make it the primary visual element
-                    { offsetX: 0, offsetY: 0, sizeMultiplier: 1.5, opacityMultiplier: 1.0 },
-                    // Only 2 smaller surrounding puffs to reduce visual noise
-                    { offsetX: baseRadius * 0.6, offsetY: -baseRadius * 0.3, sizeMultiplier: 0.8, opacityMultiplier: 0.6 },
-                    { offsetX: -baseRadius * 0.5, offsetY: baseRadius * 0.4, sizeMultiplier: 0.7, opacityMultiplier: 0.5 }
-                  ];
-
-                  cloudPuffs.forEach(puff => {
-                    allCloudShapes.push({
-                      x: targetX + puff.offsetX,
-                      y: pointY + puff.offsetY,
-                      weight: point.weight,
-                      confidence: point.confidence,
-                      radius: baseRadius * puff.sizeMultiplier,
-                      opacity: baseOpacity * puff.opacityMultiplier,
-                      gradientId
-                    });
-                  });
-                });
-              }
+            // Use the chart's existing coordinate transformation functions
+            // timeToX() and priceToY() are already defined above and handle viewport/scaling correctly
+            
+            // Filter clouds that have time overlap with the current chart viewport
+            const visibleClouds = trendClouds.filter((cloud: any) => {
+              const projectionStartTime = new Date(cloud.projection_start).getTime();
+              const projectionEndTime = new Date(cloud.projection_end).getTime();
+              
+              // Show clouds whose projection period overlaps with the chart viewport
+              return projectionEndTime >= chartStartTime && 
+                     projectionStartTime <= chartEndTime &&
+                     cloud.softmax_weight > 0.05; // Only show significant clouds
             });
-
+              
+            
+            if (visibleClouds.length === 0) return null;
+            
             return (
-              <g className="trend-cloud-container">
-                <defs>
-                  {/* Create gradients for different confidence levels */}
-                  {/* Softmax-weighted trend cloud gradient - purple/blue for convergence emphasis */}
-                  <radialGradient id="trendCloudGradient" cx="50%" cy="50%" r="50%">
-                    <stop offset="0%" stopColor="#7c3aed" stopOpacity="0.8" />
-                    <stop offset="70%" stopColor="#8b5cf6" stopOpacity="0.4" />
-                    <stop offset="100%" stopColor="#a855f7" stopOpacity="0.1" />
-                  </radialGradient>
-                </defs>
-
-                {/* Render all cloud shapes with softmax-weighted opacity */}
-                {allCloudShapes.map((shape, idx) => {
-                  // Determine if this is a main central puff (largest opacity)
-                  const isMainPuff = shape.opacity > 0.6;
+              <g className="continuous-trend-clouds">
+                {visibleClouds.map((cloud: any, index: number) => {
+                  // Calculate time boundaries using projection_start and projection_end
+                  const projectionStartTime = new Date(cloud.projection_start).getTime();
+                  const projectionEndTime = new Date(cloud.projection_end).getTime();
+                  
+                  // Calculate X positions using the chart's timeToX function
+                  const startX = timeToX(projectionStartTime);
+                  const endX = timeToX(projectionEndTime);
+                  
+                  // Skip if cloud has invalid dimensions or is outside visible area
+                  if (startX >= endX || endX <= margin.left || startX >= margin.left + plotWidth) {
+                    return null;
+                  }
+                  
+                  // Calculate Y positions using the chart's priceToY function (handles log scale correctly)
+                  const topY = priceToY(cloud.price_range[1]); // Higher price (top boundary)
+                  const bottomY = priceToY(cloud.price_range[0]); // Lower price (bottom boundary)
+                  const centerY = priceToY(cloud.center_price); // Center price line
+                  
+                  // Skip clouds outside the visible price range
+                  if (bottomY < margin.top || topY > margin.top + plotHeight) {
+                    return null;
+                  }
+                  
+                  // Styling based on cloud type and softmax_weight for emphasis
+                  const isSupport = cloud.cloud_type === 'Support';
+                  const baseOpacity = Math.max(0.15, Math.min(0.6, cloud.softmax_weight));
+                  const strokeWidth = Math.max(1, Math.min(3, cloud.softmax_weight * 4));
+                  const borderOpacity = Math.max(0.4, Math.min(0.9, cloud.softmax_weight * 1.2));
                   
                   return (
-                    <g key={idx}>
-                      <ellipse
-                        cx={shape.x}
-                        cy={shape.y}
-                        rx={shape.radius}
-                        ry={shape.radius * 0.6} // Flattened for cloud appearance
-                        fill="url(#trendCloudGradient)"
-                        opacity={shape.opacity} // This now uses softmax-weighted density
-                        stroke={isMainPuff ? '#7c3aed' : 'none'}
-                        strokeWidth={isMainPuff ? 1 : 0}
-                        strokeOpacity={0.4}
-                      />
-                    </g>
-                  );
-                })}
-
-                {/* Peak prediction markers - now with connecting lines */}
-                {visibleClouds.map((cloud, cloudIdx) => {
-                  const targetTime = getTimestamp(cloud.targetDate);
-                  const targetX = timeToX(targetTime);
-                  const peakY = priceToY(cloud.summary.peakPrice);
-                  
-                  console.log(`🎯 CHART RENDERING: Cloud ${cloudIdx} peak price: ${cloud.summary.peakPrice.toFixed(2)}, date: ${cloud.targetDate.toISOString()}, weight: ${cloud.summary.totalWeight.toFixed(1)}`);
-
-                  return (
-                    <g key={`peak-${cloudIdx}`} className="peak-prediction">
-                      <circle
-                        cx={targetX}
-                        cy={peakY}
-                        r={5}
-                        fill="#7c3aed"
-                        fillOpacity={0.9}
-                        stroke="#ffffff"
-                        strokeWidth={2}
+                    <g key={`continuous-cloud-${cloud.cloud_id || cloud.id || index}-${index}`} className="trend-cloud">
+                      {/* Cloud zone rectangle - bounded by projection_start/end (X) and price_range (Y) */}
+                      <rect
+                        x={startX}
+                        y={topY}
+                        width={endX - startX}
+                        height={Math.max(2, bottomY - topY)}
+                        fill={isSupport ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)'}
+                        fillOpacity={baseOpacity}
+                        stroke={isSupport ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)'}
+                        strokeWidth={0.8}
+                        strokeOpacity={borderOpacity}
+                        strokeDasharray="2,2"
                       />
                       
-                      {/* Peak price label - only show every few points to avoid clutter */}
-                      {cloudIdx % 3 === 0 && (
-                        <text
-                          x={targetX}
-                          y={peakY - 12}
-                          textAnchor="middle"
-                          fontSize={9}
-                          fill="#7c3aed"
-                          fontWeight="bold"
-                        >
-                          ${cloud.summary.peakPrice.toFixed(2)}
-                        </text>
+                      {/* Center price line - emphasized based on softmax_weight */}
+                      <line
+                        x1={startX}
+                        y1={centerY}
+                        x2={endX}
+                        y2={centerY}
+                        stroke={isSupport ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)'}
+                        strokeWidth={strokeWidth}
+                        strokeOpacity={borderOpacity}
+                        strokeDasharray={isSupport ? '0' : '6,3'}
+                      />
+                      
+                      {/* Cloud label with weight information */}
+                      {cloud.softmax_weight > 0.1 && (endX - startX) > 80 && (
+                        <>
+                          <text
+                            x={startX + 5}
+                            y={centerY - 3}
+                            fontSize="10"
+                            fill={isSupport ? 'rgb(21, 128, 61)' : 'rgb(153, 27, 27)'}
+                            fontWeight="600"
+                            opacity={0.9}
+                          >
+                            {cloud.cloud_id} ${cloud.center_price.toFixed(2)}
+                          </text>
+                          <text
+                            x={startX + 5}
+                            y={centerY + 12}
+                            fontSize="8"
+                            fill={isSupport ? 'rgb(21, 128, 61)' : 'rgb(153, 27, 27)'}
+                            opacity={0.7}
+                          >
+                            Weight: {(cloud.softmax_weight * 100).toFixed(1)}% | Lines: {cloud.unique_trendlines}
+                          </text>
+                        </>
                       )}
                     </g>
                   );
                 })}
-
-                {/* Connect peak predictions with a subtle line */}
-                {visibleClouds.length > 1 && (
-                  <path
-                    d={visibleClouds.map((cloud, idx) => {
-                      const targetTime = getTimestamp(cloud.targetDate);
-                      const targetX = timeToX(targetTime);
-                      const peakY = priceToY(cloud.summary.peakPrice);
-                      return idx === 0 ? `M ${targetX} ${peakY}` : `L ${targetX} ${peakY}`;
-                    }).join(' ')}
-                    fill="none"
-                    stroke="#7c3aed"
-                    strokeWidth={1}
-                    strokeOpacity={0.4}
-                    strokeDasharray="3,3"
-                  />
-                )}
               </g>
             );
           })()}
+
+          {/* Moving Averages - Optimized Rendering */}
+          {showMovingAverages && movingAveragesData.length > 0 && (() => {
+            // Pre-calculate visible MA data to avoid nested loops
+            const visibleMALines: Record<number, Array<{x: number, y: number}>> = {};
+            
+            // Initialize arrays for each period
+            MA_PERIODS.forEach(period => {
+              visibleMALines[period] = [];
+            });
+            
+            // Build coordinate arrays for each MA period
+            movingAveragesData.forEach((maData, idx) => {
+              // Simple index-based positioning (much faster than timestamp matching)
+              if (idx >= viewport.startIndex && idx < viewport.endIndex) {
+                const visibleIndex = idx - viewport.startIndex;
+                const x = indexToX(visibleIndex);
+                
+                maData.movingAverages.forEach(ma => {
+                  const y = priceToY(ma.value);
+                  visibleMALines[ma.period].push({ x, y });
+                });
+              }
+            });
+            
+            // Render polylines for each MA (much more efficient than individual line segments)
+            return (
+              <g key="ma-lines">
+                {MA_PERIODS.map(period => {
+                  const points = visibleMALines[period];
+                  if (points.length < 2) return null;
+                  
+                  const pathData = points
+                    .map((point, idx) => `${idx === 0 ? 'M' : 'L'} ${point.x} ${point.y}`)
+                    .join(' ');
+                  
+                  return (
+                    <path
+                      key={`ma-path-${period}`}
+                      d={pathData}
+                      fill="none"
+                      stroke={getMAColor(period)}
+                      strokeWidth={1.5}
+                      strokeOpacity={0.8}
+                    />
+                  );
+                })}
+              </g>
+            );
+          })()}
+
 
           {/* Trendlines (both powerful and dynamic) */}
           {trendLines.map((line, idx) => {
@@ -864,7 +995,7 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
             }
             
             
-            // Calculate line endpoints using visible chart boundaries instead of extending
+            // Calculate line endpoints using the extended chart boundaries (including 10-day extension)
             const firstCandle = chartData.candles[0];
             const lastCandle = chartData.candles[chartData.candles.length - 1];
             
@@ -924,11 +1055,13 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
                   let candleIndex = -1;
                   const pivotTime = getTimestamp(point.timestamp);
                   
+                  let closestTimeDiff = Infinity;
                   for (let i = 0; i < chartData.candles.length; i++) {
                     const candleTime = getTimestamp(chartData.candles[i].timestamp);
-                    if (Math.abs(candleTime - pivotTime) < 60000) { // Within 1 minute tolerance
+                    const timeDiff = Math.abs(candleTime - pivotTime);
+                    if (timeDiff < closestTimeDiff) {
+                      closestTimeDiff = timeDiff;
                       candleIndex = i;
-                      break;
                     }
                   }
                   
@@ -954,6 +1087,7 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
 
           {/* Candlesticks */}
           {showCandles && chartData.candles.map((candle, index) => {
+            // Use index-based positioning for even distribution of candles
             const x = indexToX(index);
             const wickX = x;
             const bodyX = x - candleWidth / 2;
@@ -998,22 +1132,24 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
             const pivotTime = getTimestamp(pivot.timestamp);
             let candleIndex = -1;
             
-            // Find the matching candle in the current viewport
+            // Find the closest matching candle by timestamp
+            let closestTimeDiff = Infinity;
             for (let i = 0; i < chartData.candles.length; i++) {
               const candleTime = getTimestamp(chartData.candles[i].timestamp);
-              if (Math.abs(candleTime - pivotTime) < 60000) { // Within 1 minute tolerance
+              const timeDiff = Math.abs(candleTime - pivotTime);
+              if (timeDiff < closestTimeDiff) {
+                closestTimeDiff = timeDiff;
                 candleIndex = i;
-                break;
               }
             }
             
             // Skip if not found in current viewport
             if (candleIndex === -1) return null;
             
-            // Use the same positioning as candlesticks
+            // Use index-based positioning to match candlesticks
             const x = indexToX(candleIndex);
             const y = priceToY(pivot.price);
-            const size = Math.max(3, pivot.strength * 8);
+            const size = Math.max(3, Math.min(8, pivot.strength * 0.8)); // Much smaller with max cap
             
             return (
               <g key={`pivot-${idx}`}>
@@ -1044,19 +1180,21 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
             const pivotTime = getTimestamp(pivot.timestamp);
             let candleIndex = -1;
             
-            // Find the matching candle in the current viewport
+            // Find the closest matching candle by timestamp
+            let closestTimeDiff = Infinity;
             for (let i = 0; i < chartData.candles.length; i++) {
               const candleTime = getTimestamp(chartData.candles[i].timestamp);
-              if (Math.abs(candleTime - pivotTime) < 60000) { // Within 1 minute tolerance
+              const timeDiff = Math.abs(candleTime - pivotTime);
+              if (timeDiff < closestTimeDiff) {
+                closestTimeDiff = timeDiff;
                 candleIndex = i;
-                break;
               }
             }
             
             // Skip if not found in current viewport
             if (candleIndex === -1) return null;
             
-            // Use the same positioning as candlesticks
+            // Use index-based positioning to match candlesticks
             const x = indexToX(candleIndex);
             const y = priceToY(pivot.price);
             const circleRadius = 15;

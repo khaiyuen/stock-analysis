@@ -138,10 +138,23 @@ export const createDisplayOptionsConfig = (): CheckboxOption[] => [
   },
   {
     id: 'showTrendCloud',
-    label: 'Trend Cloud',
-    description: 'Rolling 5-day price predictions',
+    label: 'Rolling Trend Cloud',
+    description: '5-day rolling predictions from Python analyzer',
     badge: 'NEW',
     color: 'purple'
+  },
+  {
+    id: 'showOptimizedLevels',
+    label: 'Optimized Levels',
+    description: 'AI-powered support/resistance with confidence weights',
+    badge: 'NEW',
+    color: 'green'
+  },
+  {
+    id: 'showMovingAverages',
+    label: 'Moving Averages',
+    description: 'MA lines: 20, 50, 75, 100, 125, 150, 175, 200, 225, 250',
+    color: 'amber'
   }
 ];
 

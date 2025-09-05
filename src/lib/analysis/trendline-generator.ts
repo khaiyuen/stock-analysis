@@ -437,7 +437,7 @@ export class TrendlineGenerator {
       let isDuplicate = false;
 
       for (const existing of uniqueLines) {
-        if (this.areLinessimilar(line, existing, similarityThreshold)) {
+        if (this.areLinesimilar(line, existing, similarityThreshold)) {
           // Keep the one with higher touch count
           if (line.touchCount > existing.touchCount) {
             const index = uniqueLines.indexOf(existing);
