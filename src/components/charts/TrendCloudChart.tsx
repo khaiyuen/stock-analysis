@@ -4,12 +4,30 @@ import React, { useMemo, useRef, useEffect } from 'react';
 import { format, addDays } from 'date-fns';
 import { TrendCloudData } from '@/lib/trendCloud';
 
+// New data format from full rolling analysis API
+interface FullAnalysisWindow {
+  window_id: string;
+  date: string;
+  current_price: number;
+  data_points: number;
+  pivots: number;
+  trendlines: number;
+  total_clusters: number;
+  resistance_levels: number;
+  support_levels: number;
+  strongest_cluster_weight: number;
+  strongest_cluster_price: number;
+  strongest_cluster_type: 'Resistance' | 'Support';
+}
+
 interface TrendCloudChartProps {
-  clouds: TrendCloudData[];
+  clouds?: TrendCloudData[];
+  fullAnalysisData?: FullAnalysisWindow[];
   currentPrice?: number;
   className?: string;
   width?: number;
   height?: number;
+  symbol?: string;
 }
 
 interface ChartPoint {
@@ -24,66 +42,133 @@ interface ChartPoint {
 
 export const TrendCloudChart: React.FC<TrendCloudChartProps> = ({
   clouds,
+  fullAnalysisData,
   currentPrice = 400,
   className = '',
   width = 800,
-  height = 500
+  height = 500,
+  symbol = 'Stock'
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   
-  // Process clouds into chart data
+  // Process clouds or full analysis data into chart data
   const chartData = useMemo(() => {
-    if (clouds.length === 0) return { points: [], bounds: null };
-    
-    const points: ChartPoint[] = [];
-    let minPrice = Infinity;
-    let maxPrice = -Infinity;
-    let minDate = new Date(clouds[0].targetDate);
-    let maxDate = new Date(clouds[clouds.length - 1].targetDate);
-    let maxWeight = 0;
-    
-    // Extract all cloud points with density information
-    let maxDensity = 0;
-    
-    clouds.forEach(cloud => {
-      cloud.cloudPoints.forEach(point => {
-        const chartPoint: ChartPoint = {
-          date: new Date(cloud.targetDate),
-          price: point.priceLevel,
-          weight: point.weight,
-          normalizedWeight: point.normalizedWeight,
-          density: point.density,
-          confidence: point.confidence,
-          trendlineCount: point.trendlineCount
-        };
+    // Handle new full analysis data format
+    if (fullAnalysisData && fullAnalysisData.length > 0) {
+      const points: ChartPoint[] = [];
+      let minPrice = Infinity;
+      let maxPrice = -Infinity;
+      let minDate = new Date(fullAnalysisData[0].date);
+      let maxDate = new Date(fullAnalysisData[fullAnalysisData.length - 1].date);
+      let maxWeight = 0;
+      let maxDensity = 0;
+      
+      // Transform full analysis windows into chart points
+      fullAnalysisData.forEach(window => {
+        const windowDate = new Date(window.date);
+        const predictionDate = addDays(windowDate, 5); // 5-day prediction
         
-        points.push(chartPoint);
-        
-        minPrice = Math.min(minPrice, point.priceLevel);
-        maxPrice = Math.max(maxPrice, point.priceLevel);
-        maxWeight = Math.max(maxWeight, point.weight);
-        maxDensity = Math.max(maxDensity, point.density);
+        if (window.strongest_cluster_price > 0) {
+          const weight = window.strongest_cluster_weight;
+          const density = Math.min(1, Math.max(0.1, weight * 2)); // Scale for visibility
+          
+          const chartPoint: ChartPoint = {
+            date: predictionDate,
+            price: window.strongest_cluster_price,
+            weight: weight,
+            normalizedWeight: weight,
+            density: density,
+            confidence: Math.min(1, weight * 3),
+            trendlineCount: window.trendlines
+          };
+          
+          points.push(chartPoint);
+          
+          minPrice = Math.min(minPrice, window.strongest_cluster_price);
+          maxPrice = Math.max(maxPrice, window.strongest_cluster_price);
+          maxWeight = Math.max(maxWeight, weight);
+          maxDensity = Math.max(maxDensity, density);
+          
+          if (predictionDate > maxDate) maxDate = predictionDate;
+        }
       });
-    });
+      
+      // Add padding to price range
+      const priceRange = maxPrice - minPrice;
+      const padding = priceRange * 0.1 || 10;
+      minPrice -= padding;
+      maxPrice += padding;
+      
+      // Add time padding
+      minDate = addDays(minDate, -7);
+      maxDate = addDays(maxDate, 7);
+      
+      return {
+        points,
+        bounds: {
+          minPrice,
+          maxPrice,
+          minDate,
+          maxDate,
+          maxWeight,
+          maxDensity
+        }
+      };
+    }
     
-    // Add padding to price range
-    const priceRange = maxPrice - minPrice;
-    const padding = priceRange * 0.1;
-    minPrice -= padding;
-    maxPrice += padding;
+    // Handle legacy cloud data format
+    if (clouds && clouds.length > 0) {
+      const points: ChartPoint[] = [];
+      let minPrice = Infinity;
+      let maxPrice = -Infinity;
+      let minDate = new Date(clouds[0].targetDate);
+      let maxDate = new Date(clouds[clouds.length - 1].targetDate);
+      let maxWeight = 0;
+      let maxDensity = 0;
+      
+      clouds.forEach(cloud => {
+        cloud.cloudPoints.forEach(point => {
+          const chartPoint: ChartPoint = {
+            date: new Date(cloud.targetDate),
+            price: point.priceLevel,
+            weight: point.weight,
+            normalizedWeight: point.normalizedWeight,
+            density: point.density,
+            confidence: point.confidence,
+            trendlineCount: point.trendlineCount
+          };
+          
+          points.push(chartPoint);
+          
+          minPrice = Math.min(minPrice, point.priceLevel);
+          maxPrice = Math.max(maxPrice, point.priceLevel);
+          maxWeight = Math.max(maxWeight, point.weight);
+          maxDensity = Math.max(maxDensity, point.density);
+        });
+      });
+      
+      // Add padding to price range
+      const priceRange = maxPrice - minPrice;
+      const padding = priceRange * 0.1;
+      minPrice -= padding;
+      maxPrice += padding;
+      
+      return {
+        points,
+        bounds: {
+          minPrice,
+          maxPrice,
+          minDate,
+          maxDate,
+          maxWeight,
+          maxDensity
+        }
+      };
+    }
     
-    return {
-      points,
-      bounds: {
-        minPrice,
-        maxPrice,
-        minDate,
-        maxDate,
-        maxWeight,
-        maxDensity
-      }
-    };
-  }, [clouds]);
+    // No data
+    return { points: [], bounds: null };
+  }, [clouds, fullAnalysisData]);
 
   // Draw the chart
   useEffect(() => {
@@ -259,7 +344,10 @@ export const TrendCloudChart: React.FC<TrendCloudChartProps> = ({
     ctx.fillStyle = '#1f2937';
     ctx.font = 'bold 16px system-ui, sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('Trend Cloud Prediction (5-Day Rolling)', width / 2, 25);
+    const title = fullAnalysisData 
+      ? `${symbol} Full Analysis - 5-Day Predictions`
+      : 'Trend Cloud Prediction (5-Day Rolling)';
+    ctx.fillText(title, width / 2, 25);
     
     // Y-axis label
     ctx.save();
@@ -365,16 +453,29 @@ export const TrendCloudChart: React.FC<TrendCloudChartProps> = ({
         style={{ maxWidth: '100%', height: 'auto' }}
       />
       
-      {/* Convergence Zone Info */}
-      {clouds.length > 0 && (
+      {/* Info Panel */}
+      {(clouds && clouds.length > 0) || (fullAnalysisData && fullAnalysisData.length > 0) && (
         <div className="px-4 py-2 text-xs text-gray-500 border-t bg-gray-50">
           <div className="grid grid-cols-2 gap-4">
-            <div>
-              <span className="font-medium">Convergence Zones:</span> {clouds.reduce((sum, c) => sum + (c.summary.convergenceZoneCount || 0), 0)}
-            </div>
-            <div>
-              <span className="font-medium">Lookback:</span> {clouds[0]?.lookbackDays || 365} days
-            </div>
+            {fullAnalysisData ? (
+              <>
+                <div>
+                  <span className="font-medium">Total Windows:</span> {fullAnalysisData.length}
+                </div>
+                <div>
+                  <span className="font-medium">Five-Cluster Windows:</span> {fullAnalysisData.filter(w => w.total_clusters === 5).length}
+                </div>
+              </>
+            ) : clouds ? (
+              <>
+                <div>
+                  <span className="font-medium">Convergence Zones:</span> {clouds.reduce((sum, c) => sum + (c.summary.convergenceZoneCount || 0), 0)}
+                </div>
+                <div>
+                  <span className="font-medium">Lookback:</span> {clouds[0]?.lookbackDays || 365} days
+                </div>
+              </>
+            ) : null}
           </div>
         </div>
       )}
@@ -404,17 +505,33 @@ export const TrendCloudChart: React.FC<TrendCloudChartProps> = ({
               <div className="font-medium">{(chartData.bounds.maxDensity * 100).toFixed(0)}%</div>
             </div>
             <div>
-              <span className="text-gray-600">Total Weight:</span>
+              <span className="text-gray-600">
+                {fullAnalysisData ? 'Success Rate:' : 'Total Weight:'}
+              </span>
               <div className="font-medium">
-                {clouds.length > 0 ? clouds[0].summary.totalWeight.toFixed(0) : 'N/A'}
+                {fullAnalysisData ? (
+                  fullAnalysisData.length > 0 
+                    ? ((fullAnalysisData.filter(w => w.total_clusters === 5).length / fullAnalysisData.length) * 100).toFixed(1) + '%'
+                    : '0%'
+                ) : (
+                  clouds && clouds.length > 0 ? clouds[0].summary.totalWeight.toFixed(0) : 'N/A'
+                )}
               </div>
             </div>
             <div>
-              <span className="text-gray-600">Zones/Day:</span>
+              <span className="text-gray-600">
+                {fullAnalysisData ? 'Avg Clusters:' : 'Zones/Day:'}
+              </span>
               <div className="font-medium">
-                {clouds.length > 0 
-                  ? (clouds.reduce((sum, c) => sum + c.summary.convergenceZoneCount, 0) / clouds.length).toFixed(1)
-                  : 'N/A'}
+                {fullAnalysisData ? (
+                  fullAnalysisData.length > 0 
+                    ? (fullAnalysisData.reduce((sum, w) => sum + w.total_clusters, 0) / fullAnalysisData.length).toFixed(1)
+                    : 'N/A'
+                ) : (
+                  clouds && clouds.length > 0 
+                    ? (clouds.reduce((sum, c) => sum + c.summary.convergenceZoneCount, 0) / clouds.length).toFixed(1)
+                    : 'N/A'
+                )}
               </div>
             </div>
           </div>

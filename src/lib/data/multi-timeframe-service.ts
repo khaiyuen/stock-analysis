@@ -2,6 +2,7 @@ import { YahooFinanceService } from './yahoo-finance';
 import { YahooFinanceV2Service } from './yahoo-finance-v2';
 import { AlphaVantageService } from './alpha-vantage';
 import { SmartDataManager } from './smart-data-manager';
+import { LocalDatabaseService } from './local-database-service';
 import { MarketData, HistoricalDataResponse, Timeframe } from '@/types';
 
 interface TimeframeCache {
@@ -17,6 +18,7 @@ export class MultiTimeframeService {
   private yahooFinanceV2: YahooFinanceV2Service;
   private alphaVantage: AlphaVantageService;
   private smartDataManager: SmartDataManager;
+  private localDatabase: LocalDatabaseService;
   private cache: TimeframeCache = {};
 
   // Cache TTL settings (in milliseconds)
@@ -42,6 +44,7 @@ export class MultiTimeframeService {
     this.yahooFinanceV2 = new YahooFinanceV2Service();
     this.alphaVantage = new AlphaVantageService(alphaVantageApiKey);
     this.smartDataManager = new SmartDataManager();
+    this.localDatabase = new LocalDatabaseService();
   }
 
   /**
@@ -98,7 +101,7 @@ export class MultiTimeframeService {
   }
 
   /**
-   * Fetch data for specific timeframe from APIs
+   * Fetch data for specific timeframe from local database first, then APIs
    */
   private async fetchTimeframeData(
     symbol: string,
@@ -107,8 +110,24 @@ export class MultiTimeframeService {
   ): Promise<MarketData[]> {
     const requiredPoints = this.dataPoints[timeframe];
 
+    // Try local database first
     try {
-      // Use smart data manager first (handles caching and API fallbacks)
+      console.log(`🗃️ Trying local database for ${symbol} ${timeframe}...`);
+      const localData = await this.localDatabase.getMarketData(symbol, timeframe, requiredPoints);
+      
+      if (localData.length > 0) {
+        console.log(`✅ Local database success: ${localData.length} points for ${symbol} ${timeframe}`);
+        // Reverse array since database returns newest first, but charts expect oldest first
+        return localData.reverse();
+      }
+      
+      console.log(`⚠️ No local data found for ${symbol} ${timeframe}, falling back to APIs...`);
+    } catch (error) {
+      console.warn(`❌ Local database failed for ${symbol} ${timeframe}:`, error);
+    }
+
+    try {
+      // Use smart data manager as fallback (handles caching and API fallbacks)
       console.log(`📊 Using smart data manager for ${symbol} ${timeframe}...`);
       const result = await this.smartDataManager.getMarketData(
         symbol, 
@@ -467,5 +486,53 @@ export class MultiTimeframeService {
     };
     
     return timeDiffs[timeframe];
+  }
+
+  /**
+   * Get local database health status
+   */
+  async getDatabaseHealth(): Promise<{
+    isHealthy: boolean;
+    error?: string;
+    stats?: {
+      totalRecords: number;
+      symbols: number;
+      timeframes: string[];
+    };
+  }> {
+    return await this.localDatabase.healthCheck();
+  }
+
+  /**
+   * Get available symbols in local database
+   */
+  async getAvailableSymbols(): Promise<string[]> {
+    try {
+      return await this.localDatabase.getAvailableSymbols();
+    } catch (error) {
+      console.warn('Failed to get available symbols from database:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get data info for a symbol from local database
+   */
+  async getSymbolDataInfo(symbol: string): Promise<{
+    symbol: string;
+    totalRecords: number;
+    timeframes: Timeframe[];
+    dateRange: {
+      earliest: Date;
+      latest: Date;
+    };
+    recordsByTimeframe: Record<Timeframe, number>;
+  } | null> {
+    try {
+      return await this.localDatabase.getDataInfo(symbol);
+    } catch (error) {
+      console.warn(`Failed to get data info for ${symbol}:`, error);
+      return null;
+    }
   }
 }

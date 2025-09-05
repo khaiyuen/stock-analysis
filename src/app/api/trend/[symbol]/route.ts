@@ -13,12 +13,12 @@ const convergenceAnalyzer = new ConvergenceAnalyzer();
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { symbol: string } }
+  { params }: { params: Promise<{ symbol: string }> }
 ): Promise<NextResponse<APIResponse<TrendAnalysis>>> {
   const startTime = Date.now();
   
   try {
-    const { symbol } = params;
+    const { symbol } = await params;
     const { searchParams } = new URL(request.url);
     
     // Parse query parameters
