@@ -120,7 +120,7 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
   // Removed optimized analysis state (not used in continuous trend clouds)
   
   // Trend cloud data state
-  const [rawTrendCloudData, setRawTrendCloudData] = useState<any>(null);
+  const [rawTrendCloudData, setRawTrendCloudData] = useState<unknown>(null);
   const [trendCloudLoading, setTrendCloudLoading] = useState(false);
 
   // Consolidated display options
@@ -317,7 +317,7 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
 
     // Process trend cloud data for visualization
     const trendCloudData = displayOptions.showTrendCloud && rawTrendCloudData ? 
-      rawTrendCloudData.trend_clouds?.map((cloud: any) => ({
+      (rawTrendCloudData as any)?.trend_clouds?.map((cloud: any) => ({
         id: cloud.cloud_id,
         center_price: cloud.center_price,
         price_range: cloud.price_range,
@@ -336,7 +336,7 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
       })) : [];
 
     // Remove optimized levels (not supported in new format)
-    const optimizedLevels: any[] = [];
+    const optimizedLevels: unknown[] = [];
 
 
     
@@ -529,9 +529,9 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
                 data={currentTimeframeData.marketData}
                 pivotPoints={currentTimeframeData.pivotPoints}
                 trendLines={currentTimeframeData.trendLines}
-                traditionalPivots={currentTimeframeData.traditionalPivots}
+                traditionalPivots={currentTimeframeData.traditionalPivots as any}
                 trendClouds={currentTimeframeData.trendClouds}
-                optimizedLevels={currentTimeframeData.optimizedLevels}
+                optimizedLevels={currentTimeframeData.optimizedLevels as any}
                 movingAveragesData={currentTimeframeData.movingAveragesData}
                 timeframe={activeTimeframe}
                 className="rounded-lg"
@@ -550,7 +550,7 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
             
             {/* Simple Trend Cloud Analysis */}
             <div className="border-t border-gray-200 pt-6">
-              <SimpleTrendCloud symbol={symbol} data={rawTrendCloudData} />
+              <SimpleTrendCloud symbol={symbol} data={rawTrendCloudData as any} />
             </div>
           </>
         ) : (

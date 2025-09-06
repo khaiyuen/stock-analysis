@@ -68,7 +68,7 @@ export default function TrendCloudDemo() {
               Interactive Analysis Panel
             </h2>
             <p className="text-gray-600">
-              Enable the "Trend Cloud" checkbox in Display Options to see 5-day price predictions.
+              Enable the &quot;Trend Cloud&quot; checkbox in Display Options to see 5-day price predictions.
               Purple dots show peak predictions, colored clouds show confidence levels.
             </p>
           </div>

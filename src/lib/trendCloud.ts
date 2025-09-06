@@ -1097,7 +1097,7 @@ export function calculateTrendCloud(
     console.log(`Debug trend cloud: Total trendlines: ${trendlines.length}, Quality trendlines: ${basicQualityTrendlines.length}`);
     
     // SIMPLIFIED APPROACH: Always create zones from available trendlines
-    let convergenceZones: ConvergenceZone[] = [];
+    const convergenceZones: ConvergenceZone[] = [];
     
     if (trendlines.length === 0) {
       // No trendlines at all - return empty cloud

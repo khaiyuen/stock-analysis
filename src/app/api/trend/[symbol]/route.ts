@@ -79,8 +79,8 @@ export async function GET(
     }
 
     // Detect pivot points for each timeframe
-    const pivotPoints: Record<Timeframe, any[]> = {} as Record<Timeframe, any[]>;
-    const trendLines: Record<Timeframe, any[]> = {} as Record<Timeframe, any[]>;
+    const pivotPoints: Record<Timeframe, unknown[]> = {} as Record<Timeframe, unknown[]>;
+    const trendLines: Record<Timeframe, unknown[]> = {} as Record<Timeframe, unknown[]>;
     const dataPoints: Record<Timeframe, number> = {} as Record<Timeframe, number>;
     const lastUpdated: Record<Timeframe, Date> = {} as Record<Timeframe, Date>;
 
@@ -122,10 +122,10 @@ export async function GET(
       .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 
     // Identify convergence zones
-    let convergenceZones = [];
+    let convergenceZones: unknown[] = [];
     try {
       convergenceZones = convergenceAnalyzer.identifyConvergenceZones(
-        allTrendlines,
+        allTrendlines as any,
         allMarketData
       );
       console.log(`Identified ${convergenceZones.length} convergence zones`);
@@ -138,9 +138,9 @@ export async function GET(
       symbol: symbol.toUpperCase(),
       timestamp: new Date(),
       timeframes,
-      pivotPoints,
-      trendLines,
-      convergenceZones,
+      pivotPoints: pivotPoints as any,
+      trendLines: trendLines as any,
+      convergenceZones: convergenceZones as any,
       marketData: multiTimeframeData, // Include market data for chart rendering
       metadata: {
         analysisTime: Date.now() - startTime,
@@ -160,7 +160,8 @@ export async function GET(
     });
 
   } catch (error) {
-    console.error(`Trend analysis error for ${params.symbol}:`, error);
+    const { symbol: errorSymbol } = await params;
+    console.error(`Trend analysis error for ${errorSymbol}:`, error);
     
     return NextResponse.json({
       success: false,
@@ -169,7 +170,7 @@ export async function GET(
         message: 'Failed to perform trend analysis',
         details: {
           error: error instanceof Error ? error.message : 'Unknown error',
-          symbol: params.symbol,
+          symbol: errorSymbol,
           duration: Date.now() - startTime
         }
       }
@@ -179,11 +180,11 @@ export async function GET(
 
 export async function POST(
   request: NextRequest,
-  { params }: { params: { symbol: string } }
+  { params }: { params: Promise<{ symbol: string }> }
 ): Promise<NextResponse<APIResponse<TrendAnalysis>>> {
   try {
     const body = await request.json();
-    const { symbol } = params;
+    const { symbol } = await params;
 
     // Parse request body for custom configuration
     const {
@@ -208,7 +209,8 @@ export async function POST(
     return await GET(getRequest, { params });
 
   } catch (error) {
-    console.error(`POST trend analysis error for ${params.symbol}:`, error);
+    const { symbol: errorSymbol } = await params;
+    console.error(`POST trend analysis error for ${errorSymbol}:`, error);
     
     return NextResponse.json({
       success: false,

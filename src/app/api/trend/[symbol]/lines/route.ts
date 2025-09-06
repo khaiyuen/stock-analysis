@@ -10,12 +10,12 @@ const trendlineGenerator = new TrendlineGenerator();
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { symbol: string } }
+  { params }: { params: Promise<{ symbol: string }> }
 ): Promise<NextResponse<APIResponse<Record<Timeframe, TrendLine[]>>>> {
   const startTime = Date.now();
 
   try {
-    const { symbol } = params;
+    const { symbol } = await params;
     const { searchParams } = new URL(request.url);
     
     // Parse query parameters
@@ -97,7 +97,8 @@ export async function GET(
     });
 
   } catch (error) {
-    console.error(`Trendline generation error for ${params.symbol}:`, error);
+    const { symbol: errorSymbol } = await params;
+    console.error(`Trendline generation error for ${errorSymbol}:`, error);
     
     return NextResponse.json({
       success: false,

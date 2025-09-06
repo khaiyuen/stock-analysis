@@ -40,7 +40,8 @@ function generateMockMarketData(startDate: Date, endDate: Date, startPrice: numb
     const low = Math.min(open, close) - Math.random() * dayRange * 0.5;
     
     data.push({
-      timestamp: date.toISOString(),
+      symbol: 'MOCK',
+      timestamp: date,
       open: parseFloat(open.toFixed(2)),
       high: parseFloat(high.toFixed(2)),
       low: parseFloat(low.toFixed(2)),
@@ -272,7 +273,7 @@ export const TrendCloudValidator: React.FC<TrendCloudValidatorProps> = ({
           </div>
         ) : (
           <div className="text-center text-gray-500 py-8">
-            No trend clouds calculated yet. Click "Recalculate Clouds" to generate data.
+            No trend clouds calculated yet. Click &quot;Recalculate Clouds&quot; to generate data.
           </div>
         )}
       </div>

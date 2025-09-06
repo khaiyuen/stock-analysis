@@ -15,7 +15,7 @@ interface SetupResult {
   data?: {
     symbol: string;
     results: Record<string, number>;
-    stats: any;
+    stats: Record<string, unknown>;
     processingTime: string;
   };
   errors?: string[];
@@ -25,9 +25,9 @@ export default function SetupPage() {
   const [symbol, setSymbol] = useState('QQQ');
   const [timeframes, setTimeframes] = useState(['1D', '1W', '1M']);
   const [isLoading, setIsLoading] = useState(false);
-  const [progress, setProgress] = useState<SetupProgress[]>([]);
+  // const [progress, setProgress] = useState<SetupProgress[]>([]);
   const [result, setResult] = useState<SetupResult | null>(null);
-  const [stats, setStats] = useState<any>(null);
+  const [stats, setStats] = useState<Record<string, unknown> | null>(null);
 
   const availableTimeframes = [
     { value: '1D', label: '1 Day', description: 'Daily candles - real Yahoo Finance data' },
@@ -62,7 +62,7 @@ export default function SetupPage() {
     }
 
     setIsLoading(true);
-    setProgress([]);
+    // setProgress([]);
     setResult(null);
 
     try {
@@ -208,11 +208,11 @@ export default function SetupPage() {
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div className="bg-blue-50 p-4 rounded-lg">
-                    <div className="text-2xl font-bold text-blue-600">{stats.totalRecords.toLocaleString()}</div>
+                    <div className="text-2xl font-bold text-blue-600">{(stats.totalRecords as number).toLocaleString()}</div>
                     <div className="text-sm text-blue-800">Total Records</div>
                   </div>
                   <div className="bg-green-50 p-4 rounded-lg">
-                    <div className="text-2xl font-bold text-green-600">{stats.uniqueSymbols}</div>
+                    <div className="text-2xl font-bold text-green-600">{stats.uniqueSymbols as string}</div>
                     <div className="text-sm text-green-800">Symbols</div>
                   </div>
                 </div>
@@ -220,20 +220,20 @@ export default function SetupPage() {
                 <div className="bg-gray-50 p-4 rounded-lg">
                   <div className="flex items-center gap-2 mb-2">
                     <HardDrive className="h-4 w-4 text-gray-600" />
-                    <span className="font-medium">Database Size: {stats.dbSize}</span>
+                    <span className="font-medium">Database Size: {stats.dbSize as string}</span>
                   </div>
-                  {stats.oldestRecord && stats.newestRecord && (
+                  {(stats.oldestRecord as string) && (stats.newestRecord as string) && (
                     <div className="text-sm text-gray-600">
-                      Data range: {new Date(stats.oldestRecord).toLocaleDateString()} - {new Date(stats.newestRecord).toLocaleDateString()}
+                      Data range: {new Date(stats.oldestRecord as string).toLocaleDateString()} - {new Date(stats.newestRecord as string).toLocaleDateString()}
                     </div>
                   )}
                 </div>
 
-                {stats.timeframes && stats.timeframes.length > 0 && (
+                {(stats.timeframes as any) && (stats.timeframes as any).length > 0 && (
                   <div>
                     <h3 className="font-medium mb-2">Data by Timeframe:</h3>
                     <div className="space-y-1">
-                      {stats.timeframes.map((tf: any) => (
+                      {(stats.timeframes as Array<{timeframe: string, count: number}>).map((tf) => (
                         <div key={tf.timeframe} className="flex justify-between text-sm">
                           <span>{tf.timeframe}:</span>
                           <span>{tf.count.toLocaleString()} records</span>
@@ -284,7 +284,7 @@ export default function SetupPage() {
                   </div>
                   <div className="flex items-center gap-1">
                     <HardDrive className="h-4 w-4" />
-                    Database: {result.data.stats.dbSize}
+                    Database: {(result.data.stats as any).dbSize}
                   </div>
                 </div>
 
