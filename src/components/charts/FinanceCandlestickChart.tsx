@@ -6,16 +6,6 @@ import { MarketData, PivotPoint, TrendLine, ConvergenceZone, Timeframe } from '@
 import { TrendCloudData } from '@/lib/trendCloud';
 import { MovingAverageData, MA_PERIODS, getMAColor } from '@/lib/movingAverages';
 
-interface OptimizedLevel {
-  id: string;
-  price: number;
-  type: 'Support' | 'Resistance';
-  weight: number;
-  strength: number;
-  color: string;
-  width: number;
-  source: string;
-}
 
 interface FinanceCandlestickChartProps {
   data: MarketData[];
@@ -28,7 +18,6 @@ interface FinanceCandlestickChartProps {
     support: { S1: number; S2: number; S3: number };
   } | null;
   trendClouds?: TrendCloudData[];
-  optimizedLevels?: OptimizedLevel[];
   movingAveragesData?: MovingAverageData[];
   timeframe?: Timeframe;
   className?: string;
@@ -40,7 +29,6 @@ interface FinanceCandlestickChartProps {
   showPivotLevels?: boolean;
   showCandles?: boolean;
   showTrendCloud?: boolean;
-  showOptimizedLevels?: boolean;
   showMovingAverages?: boolean;
   onViewportChange?: (viewport: { startTime: number; endTime: number }) => void;
 }
@@ -52,7 +40,6 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
   convergenceZones = [],
   traditionalPivots = null,
   trendClouds = [],
-  optimizedLevels = [],
   movingAveragesData = [],
   timeframe,
   className = '',
@@ -64,7 +51,6 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
   showPivotLevels = false,
   showCandles = true,
   showTrendCloud = false,
-  showOptimizedLevels = false,
   showMovingAverages = false,
   onViewportChange
 }) => {
@@ -155,14 +141,24 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
       max: maxPrice + padding
     };
 
-    // Calculate time range (only for visible data)
+    // Calculate time range - extend to include trend cloud projections if they exist
+    let timeRangeMax = getTimestamp(visibleData[visibleData.length - 1].timestamp);
+
+    // Extend time range to include trend cloud projections
+    if (trendClouds && trendClouds.length > 0) {
+      const maxProjectionTime = Math.max(
+        ...trendClouds.map((cloud: any) => new Date(cloud.projection_end).getTime())
+      );
+      timeRangeMax = Math.max(timeRangeMax, maxProjectionTime);
+    }
+
     const timeRange = {
       min: getTimestamp(visibleData[0].timestamp),
-      max: getTimestamp(visibleData[visibleData.length - 1].timestamp)
+      max: timeRangeMax
     };
 
     // Process visible candles
-    const candles = visibleData.map((point, index) => ({
+    let candles = visibleData.map((point, index) => ({
       ...point,
       index,
       isGreen: point.close >= point.open,
@@ -172,13 +168,16 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
     }));
 
     return { candles, priceRange, timeRange };
-  }, [data, viewport.startIndex, viewport.endIndex, dimensions]);
+  }, [data, viewport.startIndex, viewport.endIndex, dimensions, trendClouds]);
 
-  const chartWidth = dimensions.width;
+  // Extend chart width when trend clouds are visible to accommodate future projections
+  const extraWidth = (trendClouds && trendClouds.length > 0) ? 150 : 0;
+  const chartWidth = dimensions.width + extraWidth;
+
   // Account for title, period buttons, and padding in container
   const availableHeight = dimensions.height - 120; // Reserve space for title (60px) + period buttons (40px) + padding (20px)
   const chartHeight = Math.max(300, availableHeight); // Minimum 300px for chart
-  const margin = { top: 20, right: 60, left: 60, bottom: 40 };
+  const margin = { top: 20, right: 60 + extraWidth, left: 60, bottom: 40 };
   const plotWidth = chartWidth - margin.left - margin.right;
   const plotHeight = chartHeight - margin.top - margin.bottom;
 
@@ -205,7 +204,10 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
   const timeToX = (timestamp: number) => {
     const { min, max } = chartData.timeRange;
     if (max === min) return margin.left;
-    return margin.left + ((timestamp - min) / (max - min)) * plotWidth;
+
+    // Extend effective plot width slightly when trend clouds are present
+    const effectivePlotWidth = (trendClouds && trendClouds.length > 0) ? plotWidth + 50 : plotWidth;
+    return margin.left + ((timestamp - min) / (max - min)) * effectivePlotWidth;
   };
 
   const indexToX = (index: number) => {
@@ -675,11 +677,12 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
 
       {/* Main Chart */}
       <div className="px-4 flex-1">
-        <svg 
+        <svg
           ref={svgRef}
-          width={chartWidth} 
-          height={chartHeight} 
+          width={chartWidth}
+          height={chartHeight}
           className="cursor-crosshair"
+          style={{ overflow: 'visible' }}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
@@ -800,21 +803,6 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
             </>
           )}
 
-          {/* Optimized Support/Resistance Levels */}
-          {showOptimizedLevels && optimizedLevels.map((level) => (
-            <g key={level.id}>
-              <line
-                x1={margin.left}
-                y1={priceToY(level.price)}
-                x2={margin.left + plotWidth}
-                y2={priceToY(level.price)}
-                stroke={level.color}
-                strokeWidth={level.width}
-                strokeOpacity={0.8}
-                strokeDasharray="2 2"
-              />
-            </g>
-          ))}
 
           {/* Continuous Trend Cloud Visualization */}
           {showTrendCloud && trendClouds && Array.isArray(trendClouds) && trendClouds.length > 0 && (() => {
@@ -822,7 +810,13 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
             const firstCandle = chartData.candles[viewport.startIndex];
             const lastCandle = chartData.candles[viewport.endIndex - 1];
             const chartStartTime = firstCandle?.timestamp ? getTimestamp(firstCandle.timestamp) : 0;
-            const chartEndTime = lastCandle?.timestamp ? getTimestamp(lastCandle.timestamp) : Date.now();
+
+            // Extend chart end time to include future projection dates when showing trend clouds
+            const latestDataTime = lastCandle?.timestamp ? getTimestamp(lastCandle.timestamp) : Date.now();
+            const maxProjectionTime = Math.max(
+              ...trendClouds.map((cloud: any) => new Date(cloud.projection_end).getTime())
+            );
+            const chartEndTime = Math.max(latestDataTime, maxProjectionTime);
             
             // Use the chart's existing coordinate transformation functions
             // timeToX() and priceToY() are already defined above and handle viewport/scaling correctly
@@ -831,9 +825,26 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
             const visibleClouds = trendClouds.filter((cloud: any) => {
               const projectionStartTime = new Date(cloud.projection_start).getTime();
               const projectionEndTime = new Date(cloud.projection_end).getTime();
-              
+
+              // Debug logging
+              console.log('🌤️ Trend Cloud Debug:', {
+                cloudId: cloud.cloud_id,
+                cloudType: cloud.cloud_type,
+                projectionStart: cloud.projection_start,
+                projectionEnd: cloud.projection_end,
+                projectionStartTime,
+                projectionEndTime,
+                chartStartTime,
+                chartEndTime,
+                chartStartDate: new Date(chartStartTime).toISOString(),
+                chartEndDate: new Date(chartEndTime).toISOString(),
+                timeOverlap: projectionEndTime >= chartStartTime && projectionStartTime <= chartEndTime,
+                weight: cloud.softmax_weight,
+                centerPrice: cloud.center_price
+              });
+
               // Show clouds whose projection period overlaps with the chart viewport
-              return projectionEndTime >= chartStartTime && 
+              return projectionEndTime >= chartStartTime &&
                      projectionStartTime <= chartEndTime &&
                      cloud.softmax_weight > 0.05; // Only show significant clouds
             });
@@ -851,9 +862,11 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
                   // Calculate X positions using the chart's timeToX function
                   const startX = timeToX(projectionStartTime);
                   const endX = timeToX(projectionEndTime);
+
                   
                   // Skip if cloud has invalid dimensions or is outside visible area
-                  if (startX >= endX || endX <= margin.left || startX >= margin.left + plotWidth) {
+                  const effectivePlotWidth = (trendClouds && trendClouds.length > 0) ? plotWidth + 50 : plotWidth;
+                  if (startX >= endX || endX <= margin.left || startX >= margin.left + effectivePlotWidth) {
                     return null;
                   }
                   

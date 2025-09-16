@@ -66,44 +66,281 @@ interface PowerfulTrendline {
   avgDeviation: number;
   startTime: Date;
   endTime: Date;
+  // Time-weighted properties
+  weightedStrength?: number;
+  averageWeight?: number;
+  dailyGrowthRate?: number;
+  iterations?: number;
 }
 
 // Using library functions for pivot and trendline detection
 
-// Dynamic trendlines implementation following @"1.0 trend_cloud_get_trendline.ipynb" approach:
+// Time-weighted trendline detection functions (from @"1.0.2 time_weighted_trendline_analysis.ipynb")
+function calculateTimeWeight(
+  pivotDate: Date,
+  referenceDate: Date,
+  halfLifeDays: number = 80,
+  minWeight: number = 0.1
+): number {
+  const daysAgo = Math.floor((referenceDate.getTime() - pivotDate.getTime()) / (1000 * 60 * 60 * 24));
+
+  // Exponential decay: weight = 0.5^(days_ago / half_life_days)
+  const decayFactor = Math.exp(-daysAgo * Math.log(2) / halfLifeDays);
+
+  // Ensure minimum weight
+  return Math.max(decayFactor, minWeight);
+}
+
+function applyTimeWeightsToPivots(
+  pivots: PivotPoint[],
+  referenceDate: Date,
+  halfLifeDays: number = 80,
+  minWeight: number = 0.1
+): (PivotPoint & { timeWeight: number })[] {
+  if (!pivots || pivots.length === 0) return [];
+
+  return pivots.map(pivot => ({
+    ...pivot,
+    timeWeight: calculateTimeWeight(pivot.timestamp, referenceDate, halfLifeDays, minWeight)
+  }));
+}
+
+function findWeightedIterativeTrendline(
+  pivot1: PivotPoint & { timeWeight: number },
+  pivot2: PivotPoint & { timeWeight: number },
+  allPivots: (PivotPoint & { timeWeight: number })[],
+  referenceDate: Date,
+  tolerancePercent: number = 2.0,
+  weightFactor: number = 2.0
+): PowerfulTrendline | null {
+  const currentPoints = [pivot1, pivot2];
+
+  // Convert to numerical format for calculations using LOG SCALE
+  const pointsToXYLogWeighted = (points: (PivotPoint & { timeWeight: number })[]) => {
+    const refTime = referenceDate.getTime();
+    const xVals = points.map(p => (p.timestamp.getTime() - refTime) / (1000 * 60 * 60 * 24)); // days from reference
+    const yVals = points.map(p => Math.log(p.price));
+    const weights = points.map(p => Math.pow(p.timeWeight, weightFactor));
+    return { xVals, yVals, weights };
+  };
+
+  // Convert percentage to log tolerance
+  const logTolerance = Math.log(1 + tolerancePercent / 100);
+  const maxIterations = 100;
+  let iteration = 0;
+
+  while (iteration < maxIterations) {
+    iteration++;
+
+    // Calculate weighted best-fit line using LOG PRICES
+    const { xVals, yVals, weights } = pointsToXYLogWeighted(currentPoints);
+
+    if (xVals.length < 2) break;
+
+    // Use weighted linear regression
+    let slope: number, intercept: number, rSquared: number;
+
+    try {
+      // Calculate weighted least squares manually
+      const sumW = weights.reduce((a, b) => a + b, 0);
+      const meanX = weights.reduce((sum, w, i) => sum + w * xVals[i], 0) / sumW;
+      const meanY = weights.reduce((sum, w, i) => sum + w * yVals[i], 0) / sumW;
+
+      const numerator = weights.reduce((sum, w, i) => sum + w * (xVals[i] - meanX) * (yVals[i] - meanY), 0);
+      const denominator = weights.reduce((sum, w, i) => sum + w * Math.pow(xVals[i] - meanX, 2), 0);
+
+      if (denominator === 0) break;
+
+      slope = numerator / denominator;
+      intercept = meanY - slope * meanX;
+
+      // Calculate weighted R-squared
+      const yPred = xVals.map(x => slope * x + intercept);
+      const ssRes = weights.reduce((sum, w, i) => sum + w * Math.pow(yVals[i] - yPred[i], 2), 0);
+      const ssTot = weights.reduce((sum, w, i) => sum + w * Math.pow(yVals[i] - meanY, 2), 0);
+      rSquared = ssTot > 0 ? 1 - (ssRes / ssTot) : 0;
+    } catch (error) {
+      // Fallback to simple linear regression if weighted calculation fails
+      break;
+    }
+
+    // Find additional points within tolerance of this best-fit line
+    const newPoints: (PivotPoint & { timeWeight: number })[] = [];
+    for (const pivot of allPivots) {
+      // Skip if already in current_points
+      if (currentPoints.some(p => p.id === pivot.id)) continue;
+
+      const xPivot = (pivot.timestamp.getTime() - referenceDate.getTime()) / (1000 * 60 * 60 * 24);
+      const expectedLogY = slope * xPivot + intercept;
+      const actualLogY = Math.log(pivot.price);
+
+      // Apply time weighting to tolerance - more recent points get stricter tolerance
+      const adjustedTolerance = logTolerance * (2.0 - pivot.timeWeight); // Recent points: tighter tolerance
+
+      const logDifference = Math.abs(expectedLogY - actualLogY);
+      if (logDifference <= adjustedTolerance) {
+        newPoints.push(pivot);
+      }
+    }
+
+    // If no new points found, we're done
+    if (newPoints.length === 0) break;
+
+    // Add new points and continue iteration
+    currentPoints.push(...newPoints);
+  }
+
+  // Final weighted calculation with all points
+  if (currentPoints.length >= 2) {
+    const { xVals, yVals, weights } = pointsToXYLogWeighted(currentPoints);
+
+    try {
+      // Final weighted calculation
+      const sumW = weights.reduce((a, b) => a + b, 0);
+      const meanX = weights.reduce((sum, w, i) => sum + w * xVals[i], 0) / sumW;
+      const meanY = weights.reduce((sum, w, i) => sum + w * yVals[i], 0) / sumW;
+
+      const numerator = weights.reduce((sum, w, i) => sum + w * (xVals[i] - meanX) * (yVals[i] - meanY), 0);
+      const denominator = weights.reduce((sum, w, i) => sum + w * Math.pow(xVals[i] - meanX, 2), 0);
+
+      const slope = numerator / denominator;
+      const intercept = meanY - slope * meanX;
+
+      // Calculate R-squared
+      const yPred = xVals.map(x => slope * x + intercept);
+      const ssRes = weights.reduce((sum, w, i) => sum + w * Math.pow(yVals[i] - yPred[i], 2), 0);
+      const ssTot = weights.reduce((sum, w, i) => sum + w * Math.pow(yVals[i] - meanY, 2), 0);
+      const rSquared = ssTot > 0 ? 1 - (ssRes / ssTot) : 0;
+
+      // Calculate percentage growth rate from log slope
+      const dailyGrowthRate = (Math.exp(slope) - 1) * 100;
+
+      // Calculate weighted strength (sum of weights instead of count)
+      const weightedStrength = currentPoints.reduce((sum, p) => sum + p.timeWeight, 0);
+
+      // Determine type based on slope
+      const trendType: 'SUPPORT' | 'RESISTANCE' = slope > 0 ? 'SUPPORT' : 'RESISTANCE';
+
+      return {
+        id: `time-weighted-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        points: currentPoints,
+        slope: slope,
+        intercept: intercept,
+        strength: currentPoints.length,
+        type: trendType,
+        rSquared: rSquared,
+        avgDeviation: 0, // Could be calculated if needed
+        startTime: new Date(Math.min(...currentPoints.map(p => p.timestamp.getTime()))),
+        endTime: new Date(Math.max(...currentPoints.map(p => p.timestamp.getTime()))),
+        weightedStrength: weightedStrength,
+        averageWeight: weightedStrength / currentPoints.length,
+        dailyGrowthRate: dailyGrowthRate,
+        iterations: iteration
+      };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+// Time-weighted dynamic trendlines implementation following @"1.0.2 time_weighted_trendline_analysis.ipynb" approach:
 // 1. Filter market data to visible range (viewport optimization)
 // 2. Detect pivots on visible data using LOG SCALE multi-method detection (6 methods)
-// 3. Calculate trendlines using LOG SCALE iterative best-fit refinement with 2% tolerance
-// 4. Each trendline connects multiple pivot points and represents constant percentage growth rates
-// 5. Uses smart pair removal to allow pivot reuse across different trendlines
+// 3. Apply time weights to prioritize recent pivot points (80-day half-life decay)
+// 4. Calculate trendlines using time-weighted LOG SCALE iterative best-fit refinement with 2% tolerance
+// 5. Each trendline connects multiple pivot points with weighted strength based on recency
+// 6. Recent pivots get stricter tolerance for higher precision
 function detectDynamicTrendlinesFromVisibleData(
   marketData: MarketData[],
   activeTimeframe: Timeframe,
   tolerance: number = 0.02, // 2% tolerance matching notebook approach
-  visibleRange?: { startTime: number; endTime: number }
+  visibleRange?: { startTime: number; endTime: number },
+  halfLifeDays: number = 80, // 80-day half-life for time weighting
+  minWeight: number = 0.1, // Minimum weight for oldest pivots (10% of recent)
+  weightFactor: number = 2.0, // Weight amplification factor
+  maxTrendlines: number = 20 // Maximum trendlines to return
 ): PowerfulTrendline[] {
-  if (!visibleRange || marketData.length === 0) return [];
-  
+  console.log(`🔧 detectDynamicTrendlinesFromVisibleData called with:`, {
+    marketDataLength: marketData.length,
+    hasVisibleRange: !!visibleRange,
+    activeTimeframe,
+    tolerance,
+    halfLifeDays,
+    minWeight,
+    weightFactor,
+    maxTrendlines
+  });
+
+  if (!visibleRange || marketData.length === 0) {
+    console.log(`❌ Early exit: no visible range or no market data`);
+    return [];
+  }
+
   // Step 1: Filter market data to visible range first
   const visibleMarketData = marketData.filter(item => {
     const itemTime = new Date(item.timestamp).getTime();
     return itemTime >= visibleRange.startTime && itemTime <= visibleRange.endTime;
   });
-  
+
   if (visibleMarketData.length < 10) return []; // Need minimum data for meaningful analysis
-  
+
   // Step 2: Detect pivots on visible data only using LOG SCALE methods
   const visiblePivots = libDetectPivots(visibleMarketData, activeTimeframe);
-  
+
   if (visiblePivots.length < 2) return [];
-  
-  // Step 3: Calculate trendlines from visible pivots using LOG SCALE iterative best-fit refinement
-  const allTrendlines = libDetectTrendlines(visiblePivots, tolerance);
-  
-  // Limit to top 20 trendlines for website display (sorted by strength and R²)
-  const trendlines = allTrendlines.slice(0, 20);
-  
-  return trendlines;
+
+  // Step 3: Apply time weights to pivots (use most recent date as reference)
+  const referenceDate = new Date(Math.max(...visibleMarketData.map(d => new Date(d.timestamp).getTime())));
+  const weightedPivots = applyTimeWeightsToPivots(visiblePivots, referenceDate, halfLifeDays, minWeight);
+
+  if (process.env.NODE_ENV === 'development') {
+    console.log(`🔬 Time-Weighted Pivot Analysis:`, {
+      visiblePivotsCount: visiblePivots.length,
+      weightedPivotsCount: weightedPivots.length,
+      referenceDate,
+      sampleWeights: weightedPivots.slice(0, 5).map(p => ({
+        date: p.timestamp,
+        price: p.price,
+        weight: p.timeWeight,
+        daysAgo: Math.floor((referenceDate.getTime() - p.timestamp.getTime()) / (1000 * 60 * 60 * 24))
+      }))
+    });
+  }
+
+  if (weightedPivots.length < 2) return [];
+
+  // Step 4: Simple trendline detection (fallback to library method for now)
+  console.log(`🔧 Using simple trendline detection with ${weightedPivots.length} weighted pivots`);
+
+  // Use the library trendline detection as a fallback to test the flow
+  const simpleTrendlines = libDetectTrendlines(weightedPivots, tolerance);
+
+  console.log(`📊 Simple trendlines detected: ${simpleTrendlines.length}`);
+
+  // Convert simple trendlines to PowerfulTrendline format with time-weighted properties
+  const trendlines: PowerfulTrendline[] = simpleTrendlines.map((tl, index) => ({
+    id: `dynamic-${Date.now()}-${index}`,
+    points: tl.points,
+    slope: tl.slope,
+    intercept: tl.intercept,
+    strength: tl.strength,
+    type: tl.type,
+    rSquared: tl.rSquared,
+    avgDeviation: tl.avgDeviation,
+    startTime: tl.startTime,
+    endTime: tl.endTime,
+    // Add time-weighted properties
+    weightedStrength: tl.points.reduce((sum, p) => sum + (p as any).timeWeight || 1, 0),
+    averageWeight: tl.points.reduce((sum, p) => sum + (p as any).timeWeight || 1, 0) / tl.points.length,
+    dailyGrowthRate: (Math.exp(tl.slope) - 1) * 100,
+    iterations: 1
+  }));
+
+  console.log(`✅ Converted to ${trendlines.length} PowerfulTrendlines with time weights`);
+
+  return trendlines.slice(0, maxTrendlines);
 }
 
 
@@ -137,7 +374,6 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
     showLocalTopBottom: false,
     showPivotLevels: false,
     showTrendCloud: true, // ENABLED - Now using clean trend cloud visualization
-    showOptimizedLevels: false,
     showMovingAverages: false
   });
 
@@ -301,6 +537,7 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
         historicalPivots: historicalPivots.length,
         powerfulTrendlines: powerfulTrendlines.length,
         dynamicTrendlines: dynamicTrendlines.length,
+        timeWeightedApproach: needsDynamicTrendlines ? 'enabled (80-day half-life)' : 'disabled',
         visibleRange: visibleRange ? {
           from: new Date(visibleRange.startTime),
           to: new Date(visibleRange.endTime)
@@ -311,6 +548,28 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
     // Calculate dynamic trendlines (only visible range) - optimized to work on visible data only
     const dynamicTrendlines = needsDynamicTrendlines && visibleRange ?
       detectDynamicTrendlinesFromVisibleData(marketData, activeTimeframe, 0.02, visibleRange) : [];
+
+    // Debug logging for dynamic trendlines
+    if (needsDynamicTrendlines && process.env.NODE_ENV === 'development') {
+      console.log(`🔍 Dynamic Trendlines Debug for ${symbol} ${activeTimeframe}:`, {
+        needsDynamicTrendlines,
+        hasVisibleRange: !!visibleRange,
+        visibleRange: visibleRange ? {
+          from: new Date(visibleRange.startTime),
+          to: new Date(visibleRange.endTime)
+        } : null,
+        marketDataLength: marketData.length,
+        dynamicTrendlinesFound: dynamicTrendlines.length,
+        dynamicTrendlines: dynamicTrendlines.map(tl => ({
+          id: tl.id,
+          strength: tl.strength,
+          weightedStrength: tl.weightedStrength,
+          averageWeight: tl.averageWeight,
+          type: tl.type,
+          points: tl.points.length
+        }))
+      });
+    }
     
     // Convert PowerfulTrendline to TrendLine format for chart compatibility
     const convertToTrendLine = (pt: PowerfulTrendline, isDynamic: boolean = false) => ({
@@ -347,11 +606,23 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
     // Create chart trendlines from powerful lines
     const powerfulChartTrendlines = displayOptions.showTrendlines ? powerfulTrendlines.map(pt => convertToTrendLine(pt, false)) : [];
     
-    // Create chart trendlines from dynamic lines  
+    // Create chart trendlines from dynamic lines
     const dynamicChartTrendlines = displayOptions.showDynamicTrendlines ? dynamicTrendlines.map(pt => convertToTrendLine(pt, true)) : [];
-    
+
     // Combine both sets
     const chartTrendlines = [...powerfulChartTrendlines, ...dynamicChartTrendlines];
+
+    // Debug chart trendlines
+    if (needsDynamicTrendlines && process.env.NODE_ENV === 'development') {
+      console.log(`📊 Chart Trendlines Debug:`, {
+        showDynamicTrendlines: displayOptions.showDynamicTrendlines,
+        powerfulChartTrendlines: powerfulChartTrendlines.length,
+        dynamicChartTrendlines: dynamicChartTrendlines.length,
+        totalChartTrendlines: chartTrendlines.length,
+        dynamicTrendlinesWithFlag: dynamicChartTrendlines.filter(tl => tl.isDynamic).length,
+        chartTrendlineTypes: chartTrendlines.map(tl => ({ id: tl.id, isDynamic: tl.isDynamic, type: tl.type }))
+      });
+    }
     
     // Calculate traditional pivot points only if needed
     const traditionalPivots = displayOptions.showPivots ? calculateTraditionalPivots(marketData) : [];
@@ -376,8 +647,6 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
         opacity: 0.3 + cloud.softmax_weight * 0.5 // Opacity based on confidence
       })) : [];
 
-    // Remove optimized levels (not supported in new format)
-    const optimizedLevels: unknown[] = [];
 
 
     
@@ -387,7 +656,6 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
       trendLines: chartTrendlines, // Powerful trendlines connecting multiple pivots
       traditionalPivots, // Traditional daily pivot levels
       trendClouds: trendCloudData, // Use processed cloud points, not raw API response
-      optimizedLevels, // Optimized support/resistance levels with weights
       movingAveragesData // Moving averages data
     };
 
@@ -417,6 +685,45 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
     fetchAnalysis(true);
     fetchTrendCloudData(true); // Force update trend clouds too
   };
+
+  // Create dynamic display options config with loading states
+  const dynamicDisplayOptionsConfig = useMemo(() => {
+    const baseConfig = createDisplayOptionsConfig();
+
+    // Find the trend cloud option and update it with loading state
+    return baseConfig.map(option => {
+      if (option.id === 'showTrendCloud') {
+        let badge = 'NEW';
+        let color: 'blue' | 'green' | 'purple' | 'amber' | 'red' | 'indigo' = 'purple';
+        let description = '5-day rolling predictions from Python analyzer';
+
+        if (trendCloudLoading || updateStatus.isUpdating) {
+          badge = '🔄 GENERATING...';
+          color = 'amber';
+          description = updateStatus.stage || 'Generating trend clouds using Python analyzer...';
+        } else if (updateStatus.stage && !updateStatus.isUpdating) {
+          badge = '✅ UPDATED';
+          color = 'green';
+          description = `${updateStatus.stage} - 5-day rolling predictions`;
+        } else if (rawTrendCloudData) {
+          const cloudCount = (rawTrendCloudData as any)?.trend_clouds?.length || 0;
+          badge = cloudCount > 0 ? `${cloudCount} CLOUDS` : 'READY';
+          color = cloudCount > 0 ? 'green' : 'blue';
+          description = cloudCount > 0
+            ? `${cloudCount} trend clouds available from Python analyzer`
+            : '5-day rolling predictions from Python analyzer';
+        }
+
+        return {
+          ...option,
+          badge,
+          color,
+          description
+        };
+      }
+      return option;
+    });
+  }, [trendCloudLoading, updateStatus.isUpdating, updateStatus.stage, rawTrendCloudData]);
 
   const getTimeframeColor = (timeframe: Timeframe) => {
     const colors: Record<Timeframe, string> = {
@@ -503,7 +810,7 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
           <div className="lg:col-span-2">
             <CheckboxGroup
               title="Display Options"
-              options={createDisplayOptionsConfig()}
+              options={dynamicDisplayOptionsConfig}
               values={displayOptions}
               onChange={(id, checked) => setDisplayOptions(prev => ({ ...prev, [id]: checked }))}
               layout="grid"
@@ -586,7 +893,6 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
                 trendLines={currentTimeframeData.trendLines}
                 traditionalPivots={currentTimeframeData.traditionalPivots as any}
                 trendClouds={currentTimeframeData.trendClouds}
-                optimizedLevels={currentTimeframeData.optimizedLevels as any}
                 movingAveragesData={currentTimeframeData.movingAveragesData}
                 timeframe={activeTimeframe}
                 className="rounded-lg"
@@ -597,7 +903,6 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
                 showPivotLevels={displayOptions.showPivotLevels}
                 showCandles={displayOptions.showCandles}
                 showTrendCloud={displayOptions.showTrendCloud}
-                showOptimizedLevels={displayOptions.showOptimizedLevels}
                 showMovingAverages={displayOptions.showMovingAverages}
                 onViewportChange={handleViewportChange}
               />

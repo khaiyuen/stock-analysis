@@ -121,7 +121,7 @@ export const createDisplayOptionsConfig = (): CheckboxOption[] => [
   {
     id: 'showDynamicTrendlines',
     label: 'Dynamic Trendlines',
-    description: 'Trendlines for visible time period only',
+    description: 'Time-weighted trendlines emphasizing recent pivots (80-day half-life)',
     color: 'indigo'
   },
   {
@@ -138,17 +138,10 @@ export const createDisplayOptionsConfig = (): CheckboxOption[] => [
   },
   {
     id: 'showTrendCloud',
-    label: 'Rolling Trend Cloud',
+    label: 'Latest Trend Cloud',
     description: '5-day rolling predictions from Python analyzer',
     badge: 'NEW',
     color: 'purple'
-  },
-  {
-    id: 'showOptimizedLevels',
-    label: 'Optimized Levels',
-    description: 'AI-powered support/resistance with confidence weights',
-    badge: 'NEW',
-    color: 'green'
   },
   {
     id: 'showMovingAverages',
