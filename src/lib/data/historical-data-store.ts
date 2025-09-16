@@ -390,18 +390,44 @@ export class HistoricalDataStore {
         // No duplicates, keep the single item
         filteredData.push(items[0]);
       } else {
-        // Multiple entries for same date - prefer regular market hours
-        // Regular market hours typically have later timestamps (1:30 PM vs 4:00 AM)
-        // and usually higher volume
-        const preferred = items.reduce((best, current) => {
-          // Prefer later timestamp (regular market hours are typically later in the day)
+        // Multiple entries for same date - prefer regular market hours data
+        // Filter out abnormal data first, then select best entry
+        const validItems = items.filter(item => this.isValidMarketData(item));
+        const itemsToConsider = validItems.length > 0 ? validItems : items; // Fallback to all items if none pass validation
+
+        const preferred = itemsToConsider.reduce((best, current) => {
+          // First, prefer entries that pass data validation
+          const bestIsValid = this.isValidMarketData(best);
+          const currentIsValid = this.isValidMarketData(current);
+
+          if (currentIsValid && !bestIsValid) {
+            return current;
+          }
+          if (bestIsValid && !currentIsValid) {
+            return best;
+          }
+
+          // Both valid or both invalid - use other criteria
+          // Prefer regular market hours (typically 13:30 vs 04:00)
+          const bestHour = best.timestamp.getUTCHours();
+          const currentHour = current.timestamp.getUTCHours();
+
+          // Prefer entries between 13:00-21:00 UTC (market hours)
+          const bestIsMarketHours = bestHour >= 13 && bestHour <= 21;
+          const currentIsMarketHours = currentHour >= 13 && currentHour <= 21;
+
+          if (currentIsMarketHours && !bestIsMarketHours) {
+            return current;
+          }
+          if (bestIsMarketHours && !currentIsMarketHours) {
+            return best;
+          }
+
+          // If both in market hours or both outside, prefer later timestamp
           if (current.timestamp.getTime() > best.timestamp.getTime()) {
             return current;
           }
-          // If same timestamp, prefer higher volume (regular market hours have higher volume)
-          if (current.timestamp.getTime() === best.timestamp.getTime() && current.volume > best.volume) {
-            return current;
-          }
+
           return best;
         });
         
@@ -413,6 +439,54 @@ export class HistoricalDataStore {
     }
 
     return filteredData.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+  }
+
+  /**
+   * Validate market data to detect abnormal entries
+   */
+  private isValidMarketData(item: MarketData): boolean {
+    // Basic price validation
+    if (item.open <= 0 || item.high <= 0 || item.low <= 0 || item.close <= 0) {
+      return false;
+    }
+
+    // OHLC relationship validation
+    if (item.high < item.low || item.open < item.low || item.close < item.low ||
+        item.open > item.high || item.close > item.high) {
+      return false;
+    }
+
+    // Check for abnormal volume (likely aggregated/monthly data)
+    // For QQQ, normal daily volume is 20M-150M, suspicious >200M, clearly abnormal >300M
+    if (item.volume > 200_000_000) {
+      console.log(`⚠️ Rejecting abnormal volume: ${item.symbol} ${item.timestamp.toISOString()} volume=${item.volume.toLocaleString()}`);
+      return false;
+    }
+
+    // Check for abnormal daily price ranges
+    const dailyRange = (item.high - item.low) / item.low;
+    if (dailyRange > 0.15) { // More than 15% daily range is suspicious
+      console.log(`⚠️ Rejecting abnormal price range: ${item.symbol} ${item.timestamp.toISOString()} range=${(dailyRange * 100).toFixed(1)}%`);
+      return false;
+    }
+
+    // Check for suspicious 4:00 AM entries (often aggregated/weekly data)
+    const hour = item.timestamp.getUTCHours();
+    const day = item.timestamp.getUTCDate();
+
+    // Reject 4:00 AM entries on 1st of month (definitely aggregated data)
+    if (hour === 4 && day === 1) {
+      console.log(`⚠️ Rejecting suspicious 1st-of-month 4AM entry: ${item.symbol} ${item.timestamp.toISOString()}`);
+      return false;
+    }
+
+    // Reject early morning entries (4:00-6:00 AM) with high volume (likely aggregated data)
+    if ((hour >= 4 && hour <= 6) && item.volume > 100_000_000) {
+      console.log(`⚠️ Rejecting suspicious early morning high-volume entry: ${item.symbol} ${item.timestamp.toISOString()} volume=${item.volume.toLocaleString()}`);
+      return false;
+    }
+
+    return true;
   }
 
   private async updateDataRange(data: MarketData[]): Promise<void> {

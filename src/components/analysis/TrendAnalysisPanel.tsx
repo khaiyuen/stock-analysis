@@ -114,6 +114,11 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
   const [analysis, setAnalysis] = useState<TrendAnalysis | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<{
+    isUpdating: boolean;
+    stage: string;
+    lastUpdate?: Date;
+  }>({ isUpdating: false, stage: '' });
   const [selectedTimeframes, setSelectedTimeframes] = useState<Timeframe[]>(['1D', '1W', '1M']);
   const [activeTimeframe, setActiveTimeframe] = useState<Timeframe>('1D');
   const [visibleRange, setVisibleRange] = useState<{ startTime: number; endTime: number } | null>(null);
@@ -172,14 +177,21 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
     }
   }, [symbol, selectedTimeframes, advancedOptions.useCache]);
 
-  // Fetch continuous trend cloud data
-  const fetchTrendCloudData = useCallback(async () => {
+  // Fetch continuous trend cloud data with auto-update
+  const fetchTrendCloudData = useCallback(async (forceUpdate = false) => {
     if (!displayOptions.showTrendCloud) return;
 
     setTrendCloudLoading(true);
+    if (forceUpdate) {
+      setUpdateStatus({ isUpdating: true, stage: 'Checking data freshness...' });
+    }
+
     try {
-      // Call the updated API route
-      const response = await fetch(`/api/trend-cloud/${symbol}`);
+      // Call the updated API route with auto-update enabled
+      const url = `/api/trend-cloud/${symbol}?autoUpdate=true${forceUpdate ? '&forceUpdate=true' : ''}`;
+      console.log(`🔄 Fetching trend cloud data: ${url}`);
+
+      const response = await fetch(url);
       const data = await response.json();
 
       if (!data.success) {
@@ -188,17 +200,36 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
 
       // Set raw trend cloud data from the new format
       setRawTrendCloudData(data.data);
-      
+
       console.log('Loaded continuous trend cloud data:', {
         symbol: data.data.symbol,
         totalClouds: data.data.trend_clouds?.length || 0,
         supportClouds: data.data.summary?.support_clouds || 0,
-        resistanceClouds: data.data.summary?.resistance_clouds || 0
+        resistanceClouds: data.data.summary?.resistance_clouds || 0,
+        autoUpdate: data.metadata?.auto_update
       });
+
+      // Update status based on auto-update results
+      if (data.metadata?.auto_update?.data_was_updated) {
+        console.log(`✅ Data was automatically updated for ${symbol}`);
+        setUpdateStatus({
+          isUpdating: false,
+          stage: 'Data updated successfully',
+          lastUpdate: new Date()
+        });
+
+        // Clear success message after 3 seconds
+        setTimeout(() => {
+          setUpdateStatus(prev => ({ ...prev, stage: '' }));
+        }, 3000);
+      } else {
+        setUpdateStatus({ isUpdating: false, stage: '' });
+      }
 
     } catch (error) {
       console.error('Error fetching trend cloud data:', error);
       setError(error instanceof Error ? error.message : 'Failed to load trend cloud data');
+      setUpdateStatus({ isUpdating: false, stage: '' });
     } finally {
       setTrendCloudLoading(false);
     }
@@ -218,16 +249,11 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
   // Calculate moving averages data (memoized to avoid recalculation)
   const movingAveragesData = useMemo(() => {
     if (!analysis || !displayOptions.showMovingAverages) return [];
-    
+
     const rawMarketData = analysis.marketData[activeTimeframe] || [];
-    const marketData = rawMarketData.filter(item => {
-      const itemDate = new Date(item.timestamp);
-      const hour = itemDate.getUTCHours();
-      const minute = itemDate.getUTCMinutes();
-      // Skip 4:00 AM UTC entries (12:00 SGT pre-market)
-      return !(hour === 4 && minute === 0);
-    });
-    
+    // Use all market data for moving averages calculation
+    const marketData = rawMarketData;
+
     return calculateAllMovingAverages(marketData, MA_PERIODS);
   }, [analysis, activeTimeframe, displayOptions.showMovingAverages]);
 
@@ -237,39 +263,54 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
     // Filter out 4:00 AM entries (pre-market data) to prevent duplicate dates and incorrect highs
     const rawMarketData = analysis.marketData[activeTimeframe] || [];
     
-    // Filter out pre-market data (12:00 SGT / 4:00 AM UTC entries)
-    const marketData = rawMarketData.filter(item => {
-      const timestamp = new Date(item.timestamp);
-      const hour = timestamp.getHours();
-      // Keep only regular market hours data (filter out 12:00 which is 4:00 AM UTC pre-market)
-      return hour !== 12;
-    });
+    // Filter out potential duplicate or pre-market data entries
+    // Keep all data for now since we have legitimate market hours data at various times
+    const marketData = rawMarketData;
     
-    // Only calculate pivots if needed for any analysis
-    const needsPivots = displayOptions.showPivots || displayOptions.showTrendlines || displayOptions.showDynamicTrendlines || displayOptions.showLocalTopBottom || displayOptions.showPivotLevels;
-    
-    // Filter market data to visible range for better performance
-    let pivotMarketData = marketData;
+    // Calculate pivots for different purposes
+    const needsPivots = displayOptions.showPivots || displayOptions.showLocalTopBottom || displayOptions.showPivotLevels;
+    const needsHistoricalTrendlines = displayOptions.showTrendlines;
+    const needsDynamicTrendlines = displayOptions.showDynamicTrendlines;
+
+    // For display pivots (visible range only)
+    let displayPivotData = marketData;
     if (needsPivots && visibleRange) {
-      pivotMarketData = marketData.filter(item => {
+      displayPivotData = marketData.filter(item => {
         const itemTime = new Date(item.timestamp).getTime();
         return itemTime >= visibleRange.startTime && itemTime <= visibleRange.endTime;
       });
     }
-    
-    const clientSidePivots = needsPivots && pivotMarketData.length > 10 ? libDetectPivots(pivotMarketData, activeTimeframe) : [];
-    
-    // Calculate powerful trendlines only if needed (all historical data) using updated library function
-    const powerfulTrendlines = displayOptions.showTrendlines && clientSidePivots.length > 0 ? 
-      libDetectTrendlines(clientSidePivots, 0.02) : []; // 2% tolerance, matches notebook approach
-    if (displayOptions.showTrendlines) {
+    const displayPivots = needsPivots && displayPivotData.length > 10 ? libDetectPivots(displayPivotData, activeTimeframe) : [];
+
+    // For historical trendlines (ALL historical data - not limited by visible range)
+    const historicalPivots = needsHistoricalTrendlines && marketData.length > 50 ?
+      libDetectPivots(marketData, activeTimeframe) : [];
+
+    // Calculate powerful trendlines using ALL historical data
+    const powerfulTrendlines = needsHistoricalTrendlines && historicalPivots.length > 0 ?
+      libDetectTrendlines(historicalPivots, 0.02) : []; // 2% tolerance, uses full dataset
+
+    // Debug logging to verify we're using full historical data
+    if (needsHistoricalTrendlines && process.env.NODE_ENV === 'development') {
+      console.log(`📊 Trendline Analysis for ${symbol} ${activeTimeframe}:`, {
+        totalMarketData: marketData.length,
+        dateRange: marketData.length > 0 ? {
+          from: marketData[0]?.timestamp,
+          to: marketData[marketData.length - 1]?.timestamp
+        } : null,
+        historicalPivots: historicalPivots.length,
+        powerfulTrendlines: powerfulTrendlines.length,
+        dynamicTrendlines: dynamicTrendlines.length,
+        visibleRange: visibleRange ? {
+          from: new Date(visibleRange.startTime),
+          to: new Date(visibleRange.endTime)
+        } : 'none'
+      });
     }
-    
+
     // Calculate dynamic trendlines (only visible range) - optimized to work on visible data only
-    const dynamicTrendlines = displayOptions.showDynamicTrendlines && visibleRange ? 
+    const dynamicTrendlines = needsDynamicTrendlines && visibleRange ?
       detectDynamicTrendlinesFromVisibleData(marketData, activeTimeframe, 0.02, visibleRange) : [];
-    if (displayOptions.showDynamicTrendlines) {
-    }
     
     // Convert PowerfulTrendline to TrendLine format for chart compatibility
     const convertToTrendLine = (pt: PowerfulTrendline, isDynamic: boolean = false) => ({
@@ -342,7 +383,7 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
     
     const data = {
       marketData,
-      pivotPoints: clientSidePivots, // Swing highs/lows
+      pivotPoints: displayPivots, // Swing highs/lows (visible range for display)
       trendLines: chartTrendlines, // Powerful trendlines connecting multiple pivots
       traditionalPivots, // Traditional daily pivot levels
       trendClouds: trendCloudData, // Use processed cloud points, not raw API response
@@ -374,6 +415,7 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
 
   const handleRefresh = () => {
     fetchAnalysis(true);
+    fetchTrendCloudData(true); // Force update trend clouds too
   };
 
   const getTimeframeColor = (timeframe: Timeframe) => {
@@ -398,23 +440,36 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
             </h2>
             <p className="text-sm text-gray-600 mt-1">
               Symbol: {symbol.toUpperCase()} | Analysis across {selectedTimeframes.length} timeframes
+              {updateStatus.lastUpdate && (
+                <span className="ml-2 text-green-600">
+                  • Updated {updateStatus.lastUpdate.toLocaleTimeString()}
+                </span>
+              )}
             </p>
           </div>
           <div className="flex items-center gap-3">
             <button
               onClick={handleRefresh}
-              disabled={loading}
+              disabled={loading || updateStatus.isUpdating}
               className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
-              {loading ? (
+              {loading || updateStatus.isUpdating ? (
                 <>
                   <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                  Analyzing...
+                  {updateStatus.isUpdating ? updateStatus.stage : 'Analyzing...'}
                 </>
               ) : (
                 'Refresh Analysis'
               )}
             </button>
+
+            {/* Auto-update status indicator */}
+            {updateStatus.stage && !updateStatus.isUpdating && (
+              <div className="flex items-center gap-2 text-sm">
+                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                <span className="text-green-600">{updateStatus.stage}</span>
+              </div>
+            )}
           </div>
         </div>
       </div>

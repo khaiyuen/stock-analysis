@@ -161,14 +161,18 @@ export async function GET(
   { params }: { params: Promise<{ symbol: string }> }
 ): Promise<NextResponse<APIResponse<TrendCloudAnalysis>>> {
   const startTime = Date.now();
-  
+
   try {
     console.log(`🔍 API CALL: trend-cloud/${request.url}`);
     const { symbol } = await params;
     console.log(`🔍 Symbol: ${symbol}`);
     const { searchParams } = new URL(request.url);
     console.log(`🔍 Search params: ${searchParams.toString()}`);
-    
+
+    // Parse query parameters
+    const autoUpdate = searchParams.get('autoUpdate') !== 'false'; // Default to true
+    const forceUpdate = searchParams.get('forceUpdate') === 'true';
+
     // Validate symbol
     if (!symbol || symbol.length > 10) {
       return NextResponse.json({
@@ -180,23 +184,91 @@ export async function GET(
       }, { status: 400 });
     }
 
-    // Load continuous trend clouds data
-    const continuousTrendCloudsPath = path.resolve(process.cwd(), `results/${symbol.toUpperCase()}_continuous_trend_clouds.json`);
-    
-    let trendCloudsData: ContinuousTrendCloudsData;
+    const normalizedSymbol = symbol.toUpperCase();
+    const continuousTrendCloudsPath = path.resolve(process.cwd(), `results/${normalizedSymbol}_continuous_trend_clouds.json`);
 
+    let trendCloudsData: ContinuousTrendCloudsData;
+    let dataWasUpdated = false;
+
+    // Auto-update logic: Check data freshness and update if needed
+    if (autoUpdate || forceUpdate) {
+      try {
+        const { DataFreshnessService } = await import('@/lib/services/data-freshness-service');
+        const freshnessService = new DataFreshnessService();
+
+        console.log(`🔍 Checking data freshness for ${normalizedSymbol}...`);
+        const freshness = await freshnessService.checkDataFreshness(normalizedSymbol, ['1D', '1W', '1M']);
+
+        const needsUpdate = forceUpdate || freshness.needsUpdate || !fs.existsSync(continuousTrendCloudsPath);
+
+        if (needsUpdate) {
+          console.log(`🔄 Auto-updating data for ${normalizedSymbol}...`, {
+            reasons: freshness.recommendations,
+            force: forceUpdate
+          });
+
+          // Trigger auto-update
+          const autoUpdateUrl = new URL(request.url);
+          autoUpdateUrl.pathname = `/api/data/auto-update/${normalizedSymbol}`;
+          autoUpdateUrl.search = forceUpdate ? '?force=true' : '';
+
+          const updateRequest = new NextRequest(autoUpdateUrl.toString(), {
+            method: 'POST',
+            headers: request.headers,
+            body: JSON.stringify({
+              force: forceUpdate,
+              timeframes: '1D,1W,1M',
+              generateTrends: true
+            })
+          });
+
+          // Import and call the auto-update function
+          const { POST: autoUpdatePost } = await import('@/app/api/data/auto-update/[symbol]/route');
+          const updateResponse = await autoUpdatePost(updateRequest, { params: Promise.resolve({ symbol: normalizedSymbol }) });
+          const updateResult = await updateResponse.json();
+
+          if (updateResult.success && updateResult.data.stage === 'completed') {
+            dataWasUpdated = true;
+            console.log(`✅ Auto-update completed for ${normalizedSymbol}:`, updateResult.data.results);
+          } else {
+            console.warn(`⚠️ Auto-update had issues for ${normalizedSymbol}:`, updateResult.data.errors || 'Unknown error');
+            // Continue anyway - might still have usable cached data
+          }
+        } else {
+          console.log(`✅ Data is up to date for ${normalizedSymbol}`);
+        }
+
+      } catch (error) {
+        console.warn(`⚠️ Auto-update failed for ${normalizedSymbol}:`, error);
+        // Continue with existing data if auto-update fails
+      }
+    }
+
+    // Load continuous trend clouds data
     try {
       if (!fs.existsSync(continuousTrendCloudsPath)) {
-        throw new Error(`Continuous trend clouds file not found: ${continuousTrendCloudsPath}`);
+        return NextResponse.json({
+          success: false,
+          error: {
+            code: 'NO_DATA',
+            message: `Trend clouds data not found for ${normalizedSymbol}. ${autoUpdate ? 'Auto-update may have failed.' : 'Try with ?autoUpdate=true to generate the data.'}`
+          }
+        }, { status: 404 });
       }
 
       console.log(`📊 Loading continuous trend clouds from: ${continuousTrendCloudsPath}`);
       trendCloudsData = JSON.parse(fs.readFileSync(continuousTrendCloudsPath, 'utf-8'));
-      console.log(`📊 Loaded ${trendCloudsData.trend_clouds.length} trend clouds for ${symbol}`);
+      console.log(`📊 Loaded ${trendCloudsData.trend_clouds.length} trend clouds for ${normalizedSymbol}`);
 
     } catch (error) {
-      console.error(`Error loading trend clouds for ${symbol}:`, error);
-      throw new Error(`Trend clouds data not found for ${symbol}. Please generate the continuous trend clouds first.`);
+      console.error(`Error loading trend clouds for ${normalizedSymbol}:`, error);
+      return NextResponse.json({
+        success: false,
+        error: {
+          code: 'FILE_READ_ERROR',
+          message: `Failed to read trend clouds data for ${normalizedSymbol}: ${error instanceof Error ? error.message : 'Unknown error'}`
+        }
+      }, { status: 500 });
     }
 
     if (trendCloudsData.trend_clouds.length === 0) {
@@ -251,11 +323,17 @@ export async function GET(
         timestamp: new Date(),
         version: '2.0.0',
         processing_time: Date.now() - startTime,
+        auto_update: {
+          enabled: autoUpdate,
+          data_was_updated: dataWasUpdated,
+          force_update_requested: forceUpdate
+        },
         data_info: {
           total_clouds: trendCloudsData.trend_clouds.length,
           support_clouds: trendCloudsData.summary.support_clouds,
           resistance_clouds: trendCloudsData.summary.resistance_clouds,
-          analysis_period_days: trendCloudsData.metadata.analysis_period_days
+          analysis_period_days: trendCloudsData.metadata.analysis_period_days,
+          file_path: continuousTrendCloudsPath
         }
       }
     });
