@@ -186,18 +186,35 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
   const candleWidth = candleCount > 0 ? Math.max(2, (plotWidth * 0.8) / candleCount) : 4;
   const candleSpacing = candleCount > 0 ? plotWidth / candleCount : 1;
 
-  // Price scale function - always use logarithmic scale
+  // Price scale function - logarithmic scale for financial data
   const priceToY = (price: number) => {
     const { min, max } = chartData.priceRange;
-    if (min > 0) {
-      // Logarithmic scale
+    if (min > 0 && max > 0 && price > 0) {
+      // Logarithmic scale for percentage-based visualization
       const logMin = Math.log(min);
       const logMax = Math.log(max);
       const logPrice = Math.log(price);
       return margin.top + ((logMax - logPrice) / (logMax - logMin)) * plotHeight;
     } else {
-      // Fallback to linear scale if min is 0 or negative
+      // Fallback to linear scale if any value is <= 0
       return margin.top + ((max - price) / (max - min)) * plotHeight;
+    }
+  };
+
+  // Inverse function to convert Y position back to price (logarithmic)
+  const yToPrice = (y: number) => {
+    const { min, max } = chartData.priceRange;
+    const normalizedY = (y - margin.top) / plotHeight;
+
+    if (min > 0 && max > 0) {
+      // Inverse of logarithmic scale
+      const logMin = Math.log(min);
+      const logMax = Math.log(max);
+      const logPrice = logMax - normalizedY * (logMax - logMin);
+      return Math.exp(logPrice);
+    } else {
+      // Fallback to linear scale
+      return max - normalizedY * (max - min);
     }
   };
 
@@ -277,26 +294,9 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
         visible: true
       });
 
-      // Calculate current cursor price from Y position using inverse of priceToY (logarithmic scale)
-      const plotHeight = dimensions.height - margin.top - margin.bottom;
-      const yInPlot = mouseY - margin.top;
-      
-      // Clamp yInPlot to valid range
-      const clampedYInPlot = Math.max(0, Math.min(plotHeight, yInPlot));
-      
-      // Convert Y position back to price using inverse logarithmic transformation
-      const { min, max } = chartData.priceRange;
-      let currentPrice;
-      if (min > 0) {
-        // Inverse of logarithmic scale
-        const logMin = Math.log(min);
-        const logMax = Math.log(max);
-        const logPrice = logMax - (clampedYInPlot / plotHeight) * (logMax - logMin);
-        currentPrice = Math.exp(logPrice);
-      } else {
-        // Fallback to linear scale if min is 0 or negative
-        currentPrice = max - (clampedYInPlot / plotHeight) * (max - min);
-      }
+      // Calculate current cursor price from Y position using yToPrice function
+      const clampedMouseY = Math.max(margin.top, Math.min(margin.top + plotHeight, mouseY));
+      const currentPrice = yToPrice(clampedMouseY);
 
       // Find the candle under the mouse cursor
       const pixelsPerCandle = plotWidth / chartData.candles.length;
@@ -322,7 +322,7 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
         });
       }
     }
-  }, [isDragging, dragStart, viewport, data?.length, plotWidth, chartData.candles, chartData.priceRange, margin.left, margin.top, dimensions.height]);
+  }, [isDragging, dragStart, viewport, data?.length, plotWidth, chartData.candles, chartData.priceRange, margin.left, margin.top, plotHeight, yToPrice]);
 
   const handleMouseUp = useCallback(() => {
     setIsDragging(false);
@@ -334,39 +334,144 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
     setIsDragging(false);
   }, []);
 
-  // Generate Y-axis ticks with simplified labels (2 significant digits)
+  // Helper function to format numbers to exactly 2 significant digits
+  const formatTo2SigFigs = useCallback((num: number): string => {
+    if (num === 0) return '0.0';
+
+    // Get the order of magnitude
+    const magnitude = Math.floor(Math.log10(Math.abs(num)));
+
+    // Calculate the factor to get 2 significant digits
+    const factor = Math.pow(10, 1 - magnitude);
+
+    // Round to 2 significant digits
+    const rounded = Math.round(num * factor) / factor;
+
+    // Format based on magnitude
+    if (magnitude >= 3) {
+      // For thousands and above, show as K
+      return (rounded / 1000).toFixed(magnitude >= 4 ? 0 : 1) + 'K';
+    } else if (magnitude >= 1) {
+      // For 10-999, show as whole numbers or 1 decimal
+      return magnitude >= 2 ? rounded.toFixed(0) : rounded.toFixed(1);
+    } else if (magnitude >= 0) {
+      // For 1-9.9, show 1 decimal place
+      return rounded.toFixed(1);
+    } else {
+      // For < 1, show appropriate decimal places to get 2 sig figs
+      const decimals = Math.max(0, 1 - magnitude);
+      return rounded.toFixed(decimals);
+    }
+  }, []);
+
+  // Helper function to generate nice round numbers for ticks
+  const generateNiceNumbers = useCallback((min: number, max: number, targetCount: number = 8) => {
+    const range = max - min;
+    const roughStep = range / targetCount;
+
+    // Calculate nice step size
+    const magnitude = Math.floor(Math.log10(roughStep));
+    const normalizedStep = roughStep / Math.pow(10, magnitude);
+
+    let niceStep;
+    if (normalizedStep <= 1) niceStep = 1;
+    else if (normalizedStep <= 2) niceStep = 2;
+    else if (normalizedStep <= 5) niceStep = 5;
+    else niceStep = 10;
+
+    const step = niceStep * Math.pow(10, magnitude);
+
+    // Generate ticks starting from a nice round number
+    const startTick = Math.ceil(min / step) * step;
+    const numbers = [];
+
+    for (let value = startTick; value <= max + step * 0.001; value += step) {
+      if (value >= min && value <= max) {
+        numbers.push(value);
+      }
+    }
+
+    return numbers;
+  }, []);
+
+  // Generate Y-axis ticks aligned with logarithmic price scale
   const yTicks = useMemo(() => {
     const { min, max } = chartData.priceRange;
-    const tickCount = 8;
     const ticks = [];
-    for (let i = 0; i <= tickCount; i++) {
-      const value = min + (max - min) * (i / tickCount);
-      
-      // Format to first 2 significant digits with zeros
-      const formatValue = (num: number): string => {
-        if (num >= 100) {
-          // For numbers >= 100, round to nearest 10 (543.67 -> 540, 532.12 -> 530)
-          return Math.round(num / 10) * 10;
-        } else if (num >= 10) {
-          // For numbers 10-99, round to nearest whole number (12.345 -> 12)
-          return Math.round(num);
-        } else if (num >= 1) {
-          // For numbers 1-9, round to 1 decimal (1.234 -> 1.2)
-          return Math.round(num * 10) / 10;
-        } else {
-          // For numbers < 1, round to 2 decimals (0.1234 -> 0.12)
-          return Math.round(num * 100) / 100;
+
+    if (min > 0 && max > 0) {
+      // For small price ranges, use nice linear numbers
+      if (max / min < 2) {
+        const niceNumbers = generateNiceNumbers(min, max, 8);
+        niceNumbers.forEach(value => {
+          ticks.push({
+            value,
+            y: priceToY(value),
+            label: `$${formatTo2SigFigs(value)}`
+          });
+        });
+      } else {
+        // For larger ranges, use logarithmic spacing but round to nice numbers
+        const logMin = Math.log(min);
+        const logMax = Math.log(max);
+        const logRange = logMax - logMin;
+        const targetTickCount = 8;
+
+        for (let i = 0; i <= targetTickCount; i++) {
+          const logValue = logMin + (logRange * i) / targetTickCount;
+          let value = Math.exp(logValue);
+
+          // Round to a "nice" number based on magnitude
+          const magnitude = Math.floor(Math.log10(value));
+          const factor = Math.pow(10, magnitude - 1); // Keep 2 significant digits
+          value = Math.round(value / factor) * factor;
+
+          // Avoid duplicates and ensure within range
+          if (value >= min && value <= max && !ticks.some(t => Math.abs(t.value - value) < value * 0.01)) {
+            ticks.push({
+              value,
+              y: priceToY(value),
+              label: `$${formatTo2SigFigs(value)}`
+            });
+          }
         }
-      };
-      
-      ticks.push({
-        value,
-        y: priceToY(value),
-        label: `$${formatValue(value)}`
+      }
+    } else {
+      // Fallback to nice linear numbers for edge cases
+      const niceNumbers = generateNiceNumbers(min, max, 8);
+      niceNumbers.forEach(value => {
+        ticks.push({
+          value,
+          y: priceToY(value),
+          label: `$${formatTo2SigFigs(value)}`
+        });
       });
     }
+
+    // Verify tick alignment by checking if priceToY/yToPrice are consistent
+    if (ticks.length > 0) {
+      const testTick = ticks[Math.floor(ticks.length / 2)];
+      const roundTripPrice = yToPrice(testTick.y);
+      const alignment = Math.abs(roundTripPrice - testTick.value) / testTick.value;
+
+      if (alignment > 0.001) { // 0.1% tolerance
+        console.warn('🚨 Y-axis alignment issue detected:', {
+          originalPrice: testTick.value,
+          roundTripPrice,
+          alignmentError: `${(alignment * 100).toFixed(3)}%`,
+          yPosition: testTick.y
+        });
+      } else if (process.env.NODE_ENV === 'development') {
+        console.log('✅ Y-axis logarithmic alignment verified:', {
+          originalPrice: testTick.value,
+          roundTripPrice,
+          alignmentError: `${(alignment * 100).toFixed(3)}%`
+        });
+      }
+    }
+
     return ticks;
-  }, [chartData.priceRange]);
+  }, [chartData.priceRange, priceToY, yToPrice, formatTo2SigFigs, generateNiceNumbers]);
 
   // Generate X-axis ticks based on month boundaries in the current viewport + extended range
   const xTicks = useMemo(() => {
@@ -870,10 +975,50 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
                     return null;
                   }
                   
-                  // Calculate Y positions using the chart's priceToY function (handles log scale correctly)
-                  const topY = priceToY(cloud.price_range[1]); // Higher price (top boundary)
-                  const bottomY = priceToY(cloud.price_range[0]); // Lower price (bottom boundary)
-                  const centerY = priceToY(cloud.center_price); // Center price line
+                  // Calculate Y positions using the chart's priceToY function (logarithmic scale for financial data)
+                  const topPrice = cloud.price_range[1]; // Higher price (top boundary)
+                  const bottomPrice = cloud.price_range[0]; // Lower price (bottom boundary)
+                  const centerPrice = cloud.center_price; // Center price
+
+                  const topY = priceToY(topPrice);
+                  const bottomY = priceToY(bottomPrice);
+                  const centerY = priceToY(centerPrice);
+
+                  // Debug alignment verification for logarithmic scale
+                  if (process.env.NODE_ENV === 'development' && index === 0) {
+                    const { min, max } = chartData.priceRange;
+                    const isLogarithmic = min > 0 && max > 0;
+
+                    console.log('🎯 Trend Cloud Y-Axis Alignment Debug (Logarithmic):', {
+                      cloudId: cloud.cloud_id,
+                      scalingMode: isLogarithmic ? 'logarithmic' : 'linear',
+                      priceRange: [bottomPrice, topPrice],
+                      centerPrice,
+                      yAxisRange: chartData.priceRange,
+                      logInfo: isLogarithmic ? {
+                        logMin: Math.log(min),
+                        logMax: Math.log(max),
+                        logBottom: Math.log(bottomPrice),
+                        logTop: Math.log(topPrice),
+                        logCenter: Math.log(centerPrice)
+                      } : null,
+                      calculatedY: [bottomY, topY],
+                      centerY,
+                      verifyPrices: {
+                        top: yToPrice(topY),
+                        bottom: yToPrice(bottomY),
+                        center: yToPrice(centerY)
+                      },
+                      alignmentCheck: {
+                        topDiff: Math.abs(yToPrice(topY) - topPrice),
+                        bottomDiff: Math.abs(yToPrice(bottomY) - bottomPrice),
+                        centerDiff: Math.abs(yToPrice(centerY) - centerPrice),
+                        topErrorPercent: ((Math.abs(yToPrice(topY) - topPrice) / topPrice) * 100).toFixed(3) + '%',
+                        bottomErrorPercent: ((Math.abs(yToPrice(bottomY) - bottomPrice) / bottomPrice) * 100).toFixed(3) + '%',
+                        centerErrorPercent: ((Math.abs(yToPrice(centerY) - centerPrice) / centerPrice) * 100).toFixed(3) + '%'
+                      }
+                    });
+                  }
                   
                   // Skip clouds outside the visible price range
                   if (bottomY < margin.top || topY > margin.top + plotHeight) {
@@ -1261,37 +1406,68 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
             </g>
           ))}
 
-          {/* Crosshair */}
-          {crosshair.visible && (
-            <g className="crosshair">
-              <line
-                x1={margin.left}
-                y1={crosshair.y}
-                x2={chartWidth - margin.right}
-                y2={crosshair.y}
-                stroke="#666"
-                strokeWidth={1}
-                strokeDasharray="2,2"
-                opacity={0.7}
-              />
-              <line
-                x1={crosshair.x}
-                y1={margin.top}
-                x2={crosshair.x}
-                y2={chartHeight - margin.bottom}
-                stroke="#666"
-                strokeWidth={1}
-                strokeDasharray="2,2"
-                opacity={0.7}
-              />
-            </g>
-          )}
+          {/* Crosshair with price label */}
+          {crosshair.visible && (() => {
+            const clampedMouseY = Math.max(margin.top, Math.min(margin.top + plotHeight, crosshair.y));
+            const currentPrice = yToPrice(clampedMouseY);
+
+            return (
+              <g className="crosshair">
+                <line
+                  x1={margin.left}
+                  y1={crosshair.y}
+                  x2={chartWidth - margin.right}
+                  y2={crosshair.y}
+                  stroke="#666"
+                  strokeWidth={1}
+                  strokeDasharray="2,2"
+                  opacity={0.7}
+                />
+                <line
+                  x1={crosshair.x}
+                  y1={margin.top}
+                  x2={crosshair.x}
+                  y2={chartHeight - margin.bottom}
+                  stroke="#666"
+                  strokeWidth={1}
+                  strokeDasharray="2,2"
+                  opacity={0.7}
+                />
+
+                {/* Price label on Y-axis */}
+                <g className="price-label">
+                  <rect
+                    x={margin.left - 50}
+                    y={clampedMouseY - 12}
+                    width={48}
+                    height={24}
+                    fill="#333"
+                    fillOpacity={0.9}
+                    rx={3}
+                    ry={3}
+                    stroke="#666"
+                    strokeWidth={1}
+                  />
+                  <text
+                    x={margin.left - 26}
+                    y={clampedMouseY + 4}
+                    textAnchor="middle"
+                    fontSize={11}
+                    fill="white"
+                    fontWeight="bold"
+                  >
+                    ${currentPrice.toFixed(2)}
+                  </text>
+                </g>
+              </g>
+            );
+          })()}
 
           {/* Tooltip */}
           {tooltip.visible && (() => {
             // Smart positioning to keep tooltip within bounds
             const tooltipWidth = tooltip.candle ? 160 : 110;
-            const tooltipHeight = tooltip.candle ? 90 : 30;
+            const tooltipHeight = tooltip.candle ? 65 : 30;
             const padding = 10;
             
             // Calculate if cursor is near right edge
@@ -1311,7 +1487,7 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
                       x={tooltipX}
                       y={tooltipY}
                       width={160}
-                      height={90}
+                      height={65}
                       fill="#333333"
                       fillOpacity={0.95}
                       rx={6}
@@ -1331,7 +1507,7 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
                     <text
                       x={tooltipX + 5}
                       y={tooltipY + 40}
-                      fill="#10b981"
+                      fill="#ffffff"
                       fontSize={11}
                     >
                       O: ${tooltip.candle.open.toFixed(2)}  H: ${tooltip.candle.high.toFixed(2)}
@@ -1339,27 +1515,10 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
                     <text
                       x={tooltipX + 5}
                       y={tooltipY + 55}
-                      fill="#ef4444"
+                      fill="#ffffff"
                       fontSize={11}
                     >
                       L: ${tooltip.candle.low.toFixed(2)}   C: ${tooltip.candle.close.toFixed(2)}
-                    </text>
-                    <line
-                      x1={tooltipX + 5}
-                      y1={tooltipY + 62}
-                      x2={tooltipX + 150}
-                      y2={tooltipY + 62}
-                      stroke="#666666"
-                      strokeWidth={1}
-                    />
-                    <text
-                      x={tooltipX + 5}
-                      y={tooltipY + 75}
-                      fill="#60a5fa"
-                      fontSize={11}
-                      fontWeight="bold"
-                    >
-                      Price: ${tooltip.price.toFixed(2)}
                     </text>
                   </>
                 ) : (

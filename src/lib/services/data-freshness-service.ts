@@ -137,20 +137,57 @@ export class DataFreshnessService {
   }
 
   /**
-   * Check if market is currently open (rough check - US market hours)
+   * Check if US market is currently open
+   * Adjusted for Singapore timezone (SGT = UTC+8)
    */
   private isMarketHours(date: Date): boolean {
+    // Convert current time to US Eastern Time
     const utc = new Date(date.getTime() + (date.getTimezoneOffset() * 60000));
-    const est = new Date(utc.getTime() + (-5 * 3600000)); // EST offset
+
+    // EST/EDT offset (EST = UTC-5, EDT = UTC-4)
+    // We'll use EST for simplicity, but could check for daylight saving time
+    const est = new Date(utc.getTime() + (-5 * 3600000));
 
     const day = est.getDay(); // 0 = Sunday, 6 = Saturday
     const hour = est.getHours();
+    const minutes = est.getMinutes();
 
     // Market is closed on weekends
     if (day === 0 || day === 6) return false;
 
     // Market hours: 9:30 AM - 4:00 PM EST
-    return hour >= 9 && hour < 16;
+    // Convert to minutes for precise check
+    const currentMinutes = hour * 60 + minutes;
+    const marketOpen = 9 * 60 + 30; // 9:30 AM
+    const marketClose = 16 * 60; // 4:00 PM
+
+    return currentMinutes >= marketOpen && currentMinutes < marketClose;
+  }
+
+  /**
+   * Get Singapore time equivalent of US market hours
+   */
+  getMarketHoursSingapore(): {
+    isOpen: boolean;
+    openTime: string;
+    closeTime: string;
+    nextOpen: string;
+    timeUntilOpen: string;
+  } {
+    const now = new Date();
+    const isOpen = this.isMarketHours(now);
+
+    // US market hours in Singapore time
+    // EST 9:30 AM = SGT 10:30 PM (same day)
+    // EST 4:00 PM = SGT 5:00 AM (next day)
+
+    return {
+      isOpen,
+      openTime: "10:30 PM SGT",
+      closeTime: "5:00 AM SGT (next day)",
+      nextOpen: isOpen ? "Next trading day 10:30 PM SGT" : "Today 10:30 PM SGT",
+      timeUntilOpen: isOpen ? "Market is open" : "Check market schedule"
+    };
   }
 
   /**

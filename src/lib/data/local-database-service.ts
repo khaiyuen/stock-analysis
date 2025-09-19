@@ -57,12 +57,13 @@ export class LocalDatabaseService {
   }
 
   /**
-   * Build SQL query based on timeframe
+   * Build SQL query based on timeframe with deduplication
    */
   private buildQuery(): string {
-    // Base query - get latest records first
+    // Deduplicated query - get latest entry per trading day to avoid duplicates
+    // This handles cases where multiple entries exist for the same trading day
     const query = `
-      SELECT 
+      SELECT
         timestamp,
         open,
         high,
@@ -70,8 +71,23 @@ export class LocalDatabaseService {
         close,
         volume,
         adjusted_close
-      FROM ${this.config.tableName}
-      WHERE symbol = ? AND timeframe = ?
+      FROM (
+        SELECT
+          timestamp,
+          open,
+          high,
+          low,
+          close,
+          volume,
+          adjusted_close,
+          ROW_NUMBER() OVER (
+            PARTITION BY date(timestamp, 'unixepoch')
+            ORDER BY timestamp DESC
+          ) as rn
+        FROM ${this.config.tableName}
+        WHERE symbol = ? AND timeframe = ?
+      ) ranked
+      WHERE rn = 1
       ORDER BY timestamp DESC
       LIMIT ?
     `;

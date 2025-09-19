@@ -12,14 +12,15 @@ interface TrendPageProps {
   }>;
 }
 
-const SUPPORTED_SYMBOLS = ['QQQ', 'AAPL', 'MSFT', 'GOOGL', 'TSLA', 'SPY', 'NVDA', 'AMZN', 'META'];
+// Quick switcher symbols for convenience (not used for validation)
+const QUICK_SWITCH_SYMBOLS = ['QQQ', 'AAPL', 'MSFT', 'GOOGL', 'TSLA', 'SPY', 'NVDA', 'AMZN', 'META'];
 
 export default function TrendAnalysisPage({ params }: TrendPageProps) {
   const { symbol } = React.use(params);
   const upperSymbol = symbol.toUpperCase();
 
-  // Validate symbol (optional - you can remove this if you want to support any symbol)
-  if (!SUPPORTED_SYMBOLS.includes(upperSymbol)) {
+  // Basic validation for symbol format (must be alphanumeric and reasonable length)
+  if (!upperSymbol || upperSymbol.length > 10 || !/^[A-Z0-9]+$/.test(upperSymbol)) {
     notFound();
   }
 
@@ -59,7 +60,7 @@ export default function TrendAnalysisPage({ params }: TrendPageProps) {
             <div className="flex items-center gap-2">
               <span className="text-sm text-gray-600">Quick switch:</span>
               <div className="flex gap-1">
-                {SUPPORTED_SYMBOLS.slice(0, 5).map((sym) => (
+                {QUICK_SWITCH_SYMBOLS.slice(0, 5).map((sym) => (
                   <Link
                     key={sym}
                     href={`/trend/${sym}`}

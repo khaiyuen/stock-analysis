@@ -9,6 +9,30 @@ import { detectClientSidePivots as libDetectPivots, detectPowerfulTrendlines as 
 import { calculateAllMovingAverages, calculateMovingAveragesForRange, MovingAverageData, MA_PERIODS } from '@/lib/movingAverages';
 import SimpleTrendCloud from '@/components/analysis/SimpleTrendCloud';
 
+// Utility function to check if US market is open
+function isUSMarketOpen(): boolean {
+  const now = new Date();
+  const utc = new Date(now.getTime() + (now.getTimezoneOffset() * 60000));
+
+  // EST/EDT offset (EST = UTC-5, EDT = UTC-4)
+  // Using EST for simplicity
+  const est = new Date(utc.getTime() + (-5 * 3600000));
+
+  const day = est.getDay(); // 0 = Sunday, 6 = Saturday
+  const hour = est.getHours();
+  const minutes = est.getMinutes();
+
+  // Market is closed on weekends
+  if (day === 0 || day === 6) return false;
+
+  // Market hours: 9:30 AM - 4:00 PM EST
+  const currentMinutes = hour * 60 + minutes;
+  const marketOpen = 9 * 60 + 30; // 9:30 AM
+  const marketClose = 16 * 60; // 4:00 PM
+
+  return currentMinutes >= marketOpen && currentMinutes < marketClose;
+}
+
 interface TrendAnalysisPanelProps {
   symbol?: string;
   className?: string;
@@ -417,6 +441,19 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
   const fetchTrendCloudData = useCallback(async (forceUpdate = false) => {
     if (!displayOptions.showTrendCloud) return;
 
+    // Check if market is open (for Singapore timezone users)
+    const isMarketOpen = isUSMarketOpen();
+
+    // Skip auto-updates during market hours unless forced
+    if (!forceUpdate && isMarketOpen) {
+      console.log('⏸️ Skipping auto-update during market hours (data is changing)');
+      setUpdateStatus({
+        isUpdating: false,
+        stage: 'Market is open - data updates paused to avoid conflicts'
+      });
+      return;
+    }
+
     setTrendCloudLoading(true);
     if (forceUpdate) {
       setUpdateStatus({ isUpdating: true, stage: 'Checking data freshness...' });
@@ -682,6 +719,16 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
   }, []);
 
   const handleRefresh = () => {
+    const isMarketOpen = isUSMarketOpen();
+
+    if (isMarketOpen) {
+      console.log('🕐 Market is open - forcing refresh despite ongoing data changes');
+      setUpdateStatus({
+        isUpdating: true,
+        stage: 'Market is open - forcing data refresh...'
+      });
+    }
+
     fetchAnalysis(true);
     fetchTrendCloudData(true); // Force update trend clouds too
   };
@@ -752,6 +799,17 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
                   • Updated {updateStatus.lastUpdate.toLocaleTimeString()}
                 </span>
               )}
+              <span className="ml-2">
+                {isUSMarketOpen() ? (
+                  <span className="text-orange-600">
+                    • US Market: OPEN (10:30 PM - 5:00 AM SGT)
+                  </span>
+                ) : (
+                  <span className="text-blue-600">
+                    • US Market: CLOSED
+                  </span>
+                )}
+              </span>
             </p>
           </div>
           <div className="flex items-center gap-3">
