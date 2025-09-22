@@ -30,6 +30,17 @@ interface FinanceCandlestickChartProps {
   showCandles?: boolean;
   showTrendCloud?: boolean;
   showMovingAverages?: boolean;
+  showHighVolumeVWAP?: boolean;
+  highVolumeVWAPLines?: Array<{
+    anchor_date: string;
+    anchor_price: number;
+    vwap_data: Array<{
+      date: string;
+      vwap: number;
+      price_deviation: number;
+      current_price: number;
+    }>;
+  }>;
   onViewportChange?: (viewport: { startTime: number; endTime: number }) => void;
 }
 
@@ -52,6 +63,8 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
   showCandles = true,
   showTrendCloud = false,
   showMovingAverages = false,
+  showHighVolumeVWAP = false,
+  highVolumeVWAPLines = [],
   onViewportChange
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -73,9 +86,9 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
   useEffect(() => {
     if (data && data.length > 0) {
       const defaultView = Math.min(100, data.length); // Show last 100 candles by default
-      setViewport({ 
-        startIndex: Math.max(0, data.length - defaultView), 
-        endIndex: data.length 
+      setViewport({
+        startIndex: Math.max(0, data.length - defaultView),
+        endIndex: data.length
       });
     }
   }, [data?.length]);
@@ -85,11 +98,11 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
     if (onViewportChange && data && data.length > 0 && viewport.startIndex < data.length && viewport.endIndex <= data.length) {
       const startCandle = data[viewport.startIndex];
       const endCandle = data[viewport.endIndex - 1];
-      
+
       if (startCandle && endCandle) {
         const startTime = getTimestamp(startCandle.timestamp);
         const endTime = getTimestamp(endCandle.timestamp);
-        
+
         onViewportChange({ startTime, endTime });
       }
     }
@@ -109,7 +122,7 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
 
     handleResize(); // Initial size
     window.addEventListener('resize', handleResize);
-    
+
     // Use ResizeObserver for more accurate container size tracking
     if (containerRef.current && window.ResizeObserver) {
       const resizeObserver = new ResizeObserver(handleResize);
@@ -135,7 +148,7 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
     const minPrice = Math.min(...prices);
     const maxPrice = Math.max(...prices);
     const padding = (maxPrice - minPrice) * 0.05;
-    
+
     const priceRange = {
       min: minPrice - padding,
       max: maxPrice + padding
@@ -234,7 +247,7 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
   // Interactive event handlers
   const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault();
-    
+
     setViewport(currentViewport => {
       const zoomFactor = e.deltaY > 0 ? 1.1 : 0.9;
       const currentSize = currentViewport.endIndex - currentViewport.startIndex;
@@ -242,7 +255,7 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
       const center = (currentViewport.startIndex + currentViewport.endIndex) / 2;
       const newStart = Math.max(0, Math.round(center - newSize / 2));
       const newEnd = Math.min(data?.length || 100, newStart + newSize);
-      
+
       return { startIndex: newStart, endIndex: newEnd };
     });
   }, [data?.length]);
@@ -272,22 +285,22 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
       const deltaX = e.clientX - dragStart.x;
       const pixelsPerCandle = plotWidth / (viewport.endIndex - viewport.startIndex);
       const candleShift = Math.round(-deltaX / pixelsPerCandle);
-      
+
       const newStart = Math.max(0, Math.min(data?.length || 100, dragStart.startIndex + candleShift));
       const size = dragStart.endIndex - dragStart.startIndex;
       const newEnd = Math.min(data?.length || 100, newStart + size);
-      
+
       if (newEnd - newStart === size) {
         setViewport({ startIndex: newStart, endIndex: newEnd });
       }
     }
-    
+
     // Update crosshair and tooltip
     if (svgRef.current) {
       const rect = svgRef.current.getBoundingClientRect();
       const mouseX = e.clientX - rect.left;
       const mouseY = e.clientY - rect.top;
-      
+
       setCrosshair({
         x: mouseX,
         y: mouseY,
@@ -301,7 +314,7 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
       // Find the candle under the mouse cursor
       const pixelsPerCandle = plotWidth / chartData.candles.length;
       const candleIndex = Math.floor((mouseX - margin.left) / pixelsPerCandle);
-      
+
       if (candleIndex >= 0 && candleIndex < chartData.candles.length) {
         const candle = chartData.candles[candleIndex];
         setTooltip({
@@ -313,12 +326,12 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
         });
       } else {
         // Show cursor price when not over a candle
-        setTooltip({ 
-          x: mouseX, 
-          y: mouseY - 10, 
-          visible: true, 
-          candle: null, 
-          price: currentPrice 
+        setTooltip({
+          x: mouseX,
+          y: mouseY - 10,
+          visible: true,
+          candle: null,
+          price: currentPrice
         });
       }
     }
@@ -461,12 +474,6 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
           alignmentError: `${(alignment * 100).toFixed(3)}%`,
           yPosition: testTick.y
         });
-      } else if (process.env.NODE_ENV === 'development') {
-        console.log('✅ Y-axis logarithmic alignment verified:', {
-          originalPrice: testTick.value,
-          roundTripPrice,
-          alignmentError: `${(alignment * 100).toFixed(3)}%`
-        });
       }
     }
 
@@ -476,11 +483,11 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
   // Generate X-axis ticks based on month boundaries in the current viewport + extended range
   const xTicks = useMemo(() => {
     if (!chartData.candles || chartData.candles.length === 0) return [];
-    
+
     const ticks = [];
     const seenMonths = new Set<string>();
     const viewportDays = viewport.endIndex - viewport.startIndex;
-    
+
     // Look through the visible candles for month/year boundaries
     for (let i = 0; i < chartData.candles.length; i++) {
       const candle = chartData.candles[i];
@@ -488,11 +495,11 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
         const date = new Date(candle.timestamp);
         const month = date.getMonth();
         const year = date.getFullYear();
-        
+
         // For different viewport sizes, show different granularities
         let shouldAddTick = false;
         let tickKey = '';
-        
+
         if (viewportDays <= 90) {
           // For periods <= 3 months: show every month
           tickKey = `${year}-${month}`;
@@ -507,10 +514,10 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
           tickKey = `${year}`;
           shouldAddTick = !seenMonths.has(tickKey) && month === 0; // January
         }
-        
+
         if (shouldAddTick) {
           seenMonths.add(tickKey);
-          
+
           ticks.push({
             x: indexToX(i),
             label: (() => {
@@ -529,21 +536,21 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
         }
       }
     }
-    
-    
+
+
     // If we don't have enough ticks, add some evenly spaced ones
     if (ticks.length < 3) {
       const { min, max } = chartData.timeRange;
       const tickCount = Math.min(6, chartData.candles.length);
-      
+
       for (let i = 0; i < tickCount; i++) {
         const timestamp = min + (i / (tickCount - 1)) * (max - min);
         const date = new Date(timestamp);
         const x = timeToX(timestamp);
-        
+
         // Avoid duplicates
         const isDuplicate = ticks.some(tick => Math.abs(tick.x - x) < 20);
-        
+
         if (!isDuplicate) {
           ticks.push({
             x: x,
@@ -560,13 +567,13 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
         }
       }
     }
-    
+
     // Sort ticks by x position and remove duplicates
-    const uniqueTicks = ticks.filter((tick, index, arr) => 
+    const uniqueTicks = ticks.filter((tick, index, arr) =>
       index === 0 || Math.abs(tick.x - arr[index - 1].x) > 20
     );
-    
-    
+
+
     return uniqueTicks.sort((a, b) => a.x - b.x);
   }, [chartData.candles, chartData.timeRange, viewport, indexToX, timeToX]);
 
@@ -575,30 +582,30 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
     if (!line.pivotPoints || line.pivotPoints.length === 0) {
       return { color: '#666666', thickness: 0.5 };
     }
-    
+
     const highCount = line.pivotPoints.filter(p => p.type === 'HIGH').length;
     const lowCount = line.pivotPoints.filter(p => p.type === 'LOW').length;
     const totalPoints = line.pivotPoints.length;
-    
+
     // Calculate ratio: 0 = all lows (pure support), 1 = all highs (pure resistance)
     const resistanceRatio = highCount / totalPoints;
-    
+
     // Generate gradient color from green (support) to red (resistance)
     const red = Math.round(34 + (239 - 34) * resistanceRatio);   // 34 to 239
-    const green = Math.round(197 - (197 - 68) * resistanceRatio); // 197 to 68  
+    const green = Math.round(197 - (197 - 68) * resistanceRatio); // 197 to 68
     const blue = Math.round(94 - (94 - 68) * resistanceRatio);   // 94 to 68
-    
+
     const color = `rgb(${red}, ${green}, ${blue})`;
-    
+
     // Calculate relative thickness based on point counts across all lines
     const allPointCounts = allLines.map(l => l.pivotPoints?.length || 0).filter(count => count > 0);
     const minPoints = Math.min(...allPointCounts);
     const maxPoints = Math.max(...allPointCounts);
-    
+
     // Avoid division by zero if all lines have same point count
     const pointRange = maxPoints - minPoints;
     let thickness;
-    
+
     if (pointRange === 0) {
       thickness = 1.5; // Default thickness when all lines have same point count
     } else {
@@ -606,7 +613,7 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
       const relativeStrength = (totalPoints - minPoints) / pointRange;
       thickness = 0.5 + relativeStrength * 3.5; // 0.5 to 4px range
     }
-    
+
     return { color, thickness };
   };
 
@@ -656,16 +663,16 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
           <button
             onClick={() => {
               const defaultView = Math.min(100, data?.length || 100);
-              setViewport({ 
-                startIndex: 0, 
-                endIndex: defaultView 
+              setViewport({
+                startIndex: 0,
+                endIndex: defaultView
               });
             }}
             className="px-4 py-1 text-sm rounded bg-orange-600 text-white hover:bg-orange-700 transition-colors font-medium mr-4"
           >
             Go to Start
           </button>
-          
+
           {/* Main timeframe buttons */}
           <div className="flex gap-2 justify-center flex-1">
             {[
@@ -686,9 +693,9 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
                 } else {
                   // PRESERVE CURRENT VIEW POSITION: Calculate timeframe relative to current center
                   const currentCenter = (viewport.startIndex + viewport.endIndex) / 2;
-                  const currentCenterTime = data && data[Math.floor(currentCenter)] ? 
+                  const currentCenterTime = data && data[Math.floor(currentCenter)] ?
                     getTimestamp(data[Math.floor(currentCenter)].timestamp) : Date.now();
-                  
+
                   // Find the index closest to current center time
                   let centerIndex = Math.floor(currentCenter);
                   if (data && data.length > 0) {
@@ -701,16 +708,16 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
                       }
                     }
                   }
-                  
+
                   // Calculate new viewport centered on current position
                   const halfPeriod = Math.floor(period.days / 2);
                   const startIndex = Math.max(0, centerIndex - halfPeriod);
                   const endIndex = Math.min(data?.length || 100, centerIndex + halfPeriod);
-                  
+
                   setViewport({ startIndex, endIndex });
                 }
               };
-            
+
             // Calculate which period is closest to current viewport size
             const currentViewportSize = viewport.endIndex - viewport.startIndex;
             const periods = [
@@ -724,10 +731,10 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
               { label: '10Y', days: 252 * 10 },
               { label: 'ALL', days: -1 }
             ];
-            
+
             // Determine if this period should be highlighted (only closest match)
             let isActive = false;
-            
+
             if (period.days === -1) {
               // Special case for ALL - active when showing all data
               isActive = viewport.startIndex === 0 && viewport.endIndex === (data?.length || 100);
@@ -735,7 +742,7 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
               // Find the closest matching period
               let closestPeriod = periods[0];
               let smallestDifference = Math.abs(currentViewportSize - periods[0].days);
-              
+
               for (const p of periods) {
                 if (p.days === -1) continue; // Skip ALL period
                 const difference = Math.abs(currentViewportSize - p.days);
@@ -744,17 +751,17 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
                   closestPeriod = p;
                 }
               }
-              
+
               isActive = period.label === closestPeriod.label;
             }
-            
+
               return (
                 <button
                   key={period.label}
                   onClick={handlePeriodClick}
                   className={`px-3 py-1 text-sm rounded transition-colors ${
-                    isActive 
-                      ? 'bg-blue-600 text-white' 
+                    isActive
+                      ? 'bg-blue-600 text-white'
                       : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                   }`}
                 >
@@ -763,14 +770,14 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
               );
             })}
           </div>
-          
+
           {/* Go to Latest button */}
           <button
             onClick={() => {
               const defaultView = Math.min(100, data?.length || 100);
-              setViewport({ 
-                startIndex: Math.max(0, (data?.length || 100) - defaultView), 
-                endIndex: data?.length || 100 
+              setViewport({
+                startIndex: Math.max(0, (data?.length || 100) - defaultView),
+                endIndex: data?.length || 100
               });
             }}
             className="px-4 py-1 text-sm rounded bg-green-600 text-white hover:bg-green-700 transition-colors font-medium ml-4"
@@ -807,7 +814,7 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
           {showConvergence && convergenceZones.map((zone, idx) => {
             const y = priceToY(zone.priceLevel);
             const toleranceHeight = Math.abs(priceToY(zone.priceLevel + zone.tolerance) - priceToY(zone.priceLevel - zone.tolerance));
-            
+
             return (
               <g key={`zone-${idx}`}>
                 <rect
@@ -922,59 +929,42 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
               ...trendClouds.map((cloud: any) => new Date(cloud.projection_end).getTime())
             );
             const chartEndTime = Math.max(latestDataTime, maxProjectionTime);
-            
+
             // Use the chart's existing coordinate transformation functions
             // timeToX() and priceToY() are already defined above and handle viewport/scaling correctly
-            
+
             // Filter clouds that have time overlap with the current chart viewport
             const visibleClouds = trendClouds.filter((cloud: any) => {
               const projectionStartTime = new Date(cloud.projection_start).getTime();
               const projectionEndTime = new Date(cloud.projection_end).getTime();
-
-              // Debug logging
-              console.log('🌤️ Trend Cloud Debug:', {
-                cloudId: cloud.cloud_id,
-                cloudType: cloud.cloud_type,
-                projectionStart: cloud.projection_start,
-                projectionEnd: cloud.projection_end,
-                projectionStartTime,
-                projectionEndTime,
-                chartStartTime,
-                chartEndTime,
-                chartStartDate: new Date(chartStartTime).toISOString(),
-                chartEndDate: new Date(chartEndTime).toISOString(),
-                timeOverlap: projectionEndTime >= chartStartTime && projectionStartTime <= chartEndTime,
-                weight: cloud.softmax_weight,
-                centerPrice: cloud.center_price
-              });
 
               // Show clouds whose projection period overlaps with the chart viewport
               return projectionEndTime >= chartStartTime &&
                      projectionStartTime <= chartEndTime &&
                      cloud.softmax_weight > 0.05; // Only show significant clouds
             });
-              
-            
+
+
             if (visibleClouds.length === 0) return null;
-            
+
             return (
               <g className="continuous-trend-clouds">
                 {visibleClouds.map((cloud: any, index: number) => {
                   // Calculate time boundaries using projection_start and projection_end
                   const projectionStartTime = new Date(cloud.projection_start).getTime();
                   const projectionEndTime = new Date(cloud.projection_end).getTime();
-                  
+
                   // Calculate X positions using the chart's timeToX function
                   const startX = timeToX(projectionStartTime);
                   const endX = timeToX(projectionEndTime);
 
-                  
+
                   // Skip if cloud has invalid dimensions or is outside visible area
                   const effectivePlotWidth = (trendClouds && trendClouds.length > 0) ? plotWidth + 50 : plotWidth;
                   if (startX >= endX || endX <= margin.left || startX >= margin.left + effectivePlotWidth) {
                     return null;
                   }
-                  
+
                   // Calculate Y positions using the chart's priceToY function (logarithmic scale for financial data)
                   const topPrice = cloud.price_range[1]; // Higher price (top boundary)
                   const bottomPrice = cloud.price_range[0]; // Lower price (bottom boundary)
@@ -984,53 +974,17 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
                   const bottomY = priceToY(bottomPrice);
                   const centerY = priceToY(centerPrice);
 
-                  // Debug alignment verification for logarithmic scale
-                  if (process.env.NODE_ENV === 'development' && index === 0) {
-                    const { min, max } = chartData.priceRange;
-                    const isLogarithmic = min > 0 && max > 0;
-
-                    console.log('🎯 Trend Cloud Y-Axis Alignment Debug (Logarithmic):', {
-                      cloudId: cloud.cloud_id,
-                      scalingMode: isLogarithmic ? 'logarithmic' : 'linear',
-                      priceRange: [bottomPrice, topPrice],
-                      centerPrice,
-                      yAxisRange: chartData.priceRange,
-                      logInfo: isLogarithmic ? {
-                        logMin: Math.log(min),
-                        logMax: Math.log(max),
-                        logBottom: Math.log(bottomPrice),
-                        logTop: Math.log(topPrice),
-                        logCenter: Math.log(centerPrice)
-                      } : null,
-                      calculatedY: [bottomY, topY],
-                      centerY,
-                      verifyPrices: {
-                        top: yToPrice(topY),
-                        bottom: yToPrice(bottomY),
-                        center: yToPrice(centerY)
-                      },
-                      alignmentCheck: {
-                        topDiff: Math.abs(yToPrice(topY) - topPrice),
-                        bottomDiff: Math.abs(yToPrice(bottomY) - bottomPrice),
-                        centerDiff: Math.abs(yToPrice(centerY) - centerPrice),
-                        topErrorPercent: ((Math.abs(yToPrice(topY) - topPrice) / topPrice) * 100).toFixed(3) + '%',
-                        bottomErrorPercent: ((Math.abs(yToPrice(bottomY) - bottomPrice) / bottomPrice) * 100).toFixed(3) + '%',
-                        centerErrorPercent: ((Math.abs(yToPrice(centerY) - centerPrice) / centerPrice) * 100).toFixed(3) + '%'
-                      }
-                    });
-                  }
-                  
                   // Skip clouds outside the visible price range
                   if (bottomY < margin.top || topY > margin.top + plotHeight) {
                     return null;
                   }
-                  
+
                   // Styling based on cloud type and softmax_weight for emphasis
                   const isSupport = cloud.cloud_type === 'Support';
                   const baseOpacity = Math.max(0.15, Math.min(0.6, cloud.softmax_weight));
                   const strokeWidth = Math.max(1, Math.min(3, cloud.softmax_weight * 4));
                   const borderOpacity = Math.max(0.4, Math.min(0.9, cloud.softmax_weight * 1.2));
-                  
+
                   return (
                     <g key={`continuous-cloud-${cloud.cloud_id || cloud.id || index}-${index}`} className="trend-cloud">
                       {/* Cloud zone rectangle - bounded by projection_start/end (X) and price_range (Y) */}
@@ -1046,7 +1000,7 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
                         strokeOpacity={borderOpacity}
                         strokeDasharray="2,2"
                       />
-                      
+
                       {/* Center price line - emphasized based on softmax_weight */}
                       <line
                         x1={startX}
@@ -1058,7 +1012,7 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
                         strokeOpacity={borderOpacity}
                         strokeDasharray={isSupport ? '0' : '6,3'}
                       />
-                      
+
                       {/* Cloud label with weight information */}
                       {cloud.softmax_weight > 0.1 && (endX - startX) > 80 && (
                         <>
@@ -1094,37 +1048,37 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
           {showMovingAverages && movingAveragesData.length > 0 && (() => {
             // Pre-calculate visible MA data to avoid nested loops
             const visibleMALines: Record<number, Array<{x: number, y: number}>> = {};
-            
+
             // Initialize arrays for each period
             MA_PERIODS.forEach(period => {
               visibleMALines[period] = [];
             });
-            
+
             // Build coordinate arrays for each MA period
             movingAveragesData.forEach((maData, idx) => {
               // Simple index-based positioning (much faster than timestamp matching)
               if (idx >= viewport.startIndex && idx < viewport.endIndex) {
                 const visibleIndex = idx - viewport.startIndex;
                 const x = indexToX(visibleIndex);
-                
+
                 maData.movingAverages.forEach(ma => {
                   const y = priceToY(ma.value);
                   visibleMALines[ma.period].push({ x, y });
                 });
               }
             });
-            
+
             // Render polylines for each MA (much more efficient than individual line segments)
             return (
               <g key="ma-lines">
                 {MA_PERIODS.map(period => {
                   const points = visibleMALines[period];
                   if (points.length < 2) return null;
-                  
+
                   const pathData = points
                     .map((point, idx) => `${idx === 0 ? 'M' : 'L'} ${point.x} ${point.y}`)
                     .join(' ');
-                  
+
                   return (
                     <path
                       key={`ma-path-${period}`}
@@ -1140,59 +1094,159 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
             );
           })()}
 
+          {/* High Volume VWAP Lines - Optimized */}
+          {showHighVolumeVWAP && highVolumeVWAPLines && highVolumeVWAPLines.length > 0 && (() => {
+            // Generate distinct colors for VWAP lines
+            const vwapColors = [
+              '#6366f1', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981',
+              '#06b6d4', '#84cc16', '#f97316', '#ef4444', '#3b82f6'
+            ];
+
+            // Pre-build timestamp map for O(1) lookups
+            const timestampMap = new Map<number, number>();
+            chartData.candles.forEach((candle, index) => {
+              const dayStart = new Date(getTimestamp(candle.timestamp));
+              dayStart.setHours(0, 0, 0, 0);
+              timestampMap.set(dayStart.getTime(), index);
+            });
+
+            // Show all 30 VWAP lines for complete institutional activity view
+            const topVWAPLines = highVolumeVWAPLines;
+
+            return (
+              <g key="high-volume-vwap-lines">
+                {topVWAPLines.map((vwapLine, lineIndex) => {
+                  const lineColor = vwapColors[lineIndex % vwapColors.length];
+                  const vwapPoints: Array<{x: number, y: number}> = [];
+                  let anchorPoint: {x: number, y: number} | null = null;
+
+                  // Build optimized coordinate array with viewport filtering
+                  vwapLine.vwap_data.forEach((vwapPoint, pointIndex) => {
+                    const pointDate = new Date(vwapPoint.date);
+                    pointDate.setHours(0, 0, 0, 0);
+                    const dayKey = pointDate.getTime();
+
+                    const candleIndex = timestampMap.get(dayKey);
+                    if (candleIndex !== undefined) {
+                      const x = indexToX(candleIndex);
+                      const y = priceToY(vwapPoint.vwap);
+
+                      // Viewport filtering - only include points within visible area + small buffer
+                      if (x >= margin.left - 50 && x <= margin.left + plotWidth + 50) {
+                        vwapPoints.push({ x, y });
+
+                        // Store first point as anchor
+                        if (pointIndex === 0) {
+                          anchorPoint = { x, y };
+                        }
+                      }
+                    }
+                  });
+
+                  // Skip if insufficient visible points
+                  if (vwapPoints.length < 2) return null;
+
+                  // Optimize path generation - reduce points for long lines
+                  let optimizedPoints = vwapPoints;
+                  if (vwapPoints.length > 50) {
+                    // Douglas-Peucker-like simplification for long lines
+                    optimizedPoints = vwapPoints.filter((_, index) =>
+                      index === 0 || index === vwapPoints.length - 1 || index % 2 === 0
+                    );
+                  }
+
+                  const pathData = optimizedPoints
+                    .map((point, idx) => `${idx === 0 ? 'M' : 'L'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
+                    .join(' ');
+
+                  // Calculate opacity and stroke width based on line importance
+                  const opacity = lineIndex < 5 ? 0.8 : lineIndex < 10 ? 0.6 : 0.4;
+                  const strokeWidth = lineIndex < 5 ? 2 : lineIndex < 10 ? 1.5 : 1;
+
+                  return (
+                    <g key={`hvwap-${lineIndex}`}>
+                      {/* VWAP Line */}
+                      <path
+                        d={pathData}
+                        fill="none"
+                        stroke={lineColor}
+                        strokeWidth={strokeWidth}
+                        strokeOpacity={opacity}
+                        strokeDasharray="3,3"
+                      />
+
+                      {/* Anchor point - only for top 10 lines to maintain clarity */}
+                      {anchorPoint && lineIndex < 10 && (
+                        <circle
+                          cx={anchorPoint.x}
+                          cy={anchorPoint.y}
+                          r={2}
+                          fill={lineColor}
+                          fillOpacity={0.8}
+                          stroke="white"
+                          strokeWidth={0.5}
+                        />
+                      )}
+                    </g>
+                  );
+                })}
+              </g>
+            );
+          })()}
+
 
           {/* Trendlines (both powerful and dynamic) */}
           {trendLines.map((line, idx) => {
             // Skip if this is a dynamic line but dynamic trendlines are disabled
             if (line.isDynamic && !showDynamicTrendlines) return null;
-            
+
             // Skip if this is a powerful line but powerful trendlines are disabled
             if (!line.isDynamic && !showTrendlines) return null;
             if (!line.pivotPoints || line.pivotPoints.length < 2) {
               return null;
             }
-            
-            
+
+
             // Calculate line endpoints using the extended chart boundaries (including 10-day extension)
             const firstCandle = chartData.candles[0];
             const lastCandle = chartData.candles[chartData.candles.length - 1];
-            
+
             if (!firstCandle || !lastCandle) return null;
-            
+
             const chartStartTime = getTimestamp(firstCandle.timestamp);
             const chartEndTime = getTimestamp(lastCandle.timestamp);
-            
+
             // Use the line equation to calculate prices at chart boundaries
             const timeBase = new Date(line.pivotPoints[0].timestamp).getTime();
             const startDays = (chartStartTime - timeBase) / (1000 * 60 * 60 * 24);
             const endDays = (chartEndTime - timeBase) / (1000 * 60 * 60 * 24);
-            
+
             const startPrice = line.equation.slope * startDays + line.equation.intercept;
             const endPrice = line.equation.slope * endDays + line.equation.intercept;
-            
+
             // Convert to screen coordinates using chart boundaries
             const x1 = margin.left; // Start at left edge of chart
             const y1 = priceToY(startPrice);
-            const x2 = margin.left + plotWidth; // End at right edge of chart  
+            const x2 = margin.left + plotWidth; // End at right edge of chart
             const y2 = priceToY(endPrice);
-            
-            
+
+
             // Skip lines with invalid coordinates
             if (isNaN(x1) || isNaN(y1) || isNaN(x2) || isNaN(y2)) {
               return null;
             }
-            
+
             // Get dynamic color and thickness based on pivot point analysis
             const { color, thickness } = getLineColorAndThickness(line, trendLines);
             const baseOpacity = Math.max(0.5, Math.min(1.0, 0.4 + (line.pivotPoints.length / 15)));
-            
+
             // Make dynamic trendlines more transparent to differentiate them
             const opacity = line.isDynamic ? baseOpacity * 0.7 : baseOpacity;
-            
+
             // Get high/low counts for label
             const highCount = line.pivotPoints.filter(p => p.type === 'HIGH').length;
             const lowCount = line.pivotPoints.filter(p => p.type === 'LOW').length;
-            
+
             return (
               <g key={`powerful-line-${idx}`}>
                 {/* Main trendline with gradient color and dynamic thickness */}
@@ -1206,13 +1260,13 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
                   strokeOpacity={opacity}
                   strokeDasharray={undefined}
                 />
-                
+
                 {/* Connected pivot points - show which points this line connects */}
                 {line.pivotPoints.map((point, touchIdx) => {
                   // Find the corresponding candle index for proper positioning
                   let candleIndex = -1;
                   const pivotTime = getTimestamp(point.timestamp);
-                  
+
                   let closestTimeDiff = Infinity;
                   for (let i = 0; i < chartData.candles.length; i++) {
                     const candleTime = getTimestamp(chartData.candles[i].timestamp);
@@ -1222,9 +1276,9 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
                       candleIndex = i;
                     }
                   }
-                  
+
                   if (candleIndex === -1) return null;
-                  
+
                   return (
                     <circle
                       key={`powerful-touch-${idx}-${touchIdx}`}
@@ -1238,7 +1292,7 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
                     />
                   );
                 })}
-                
+
               </g>
             );
           })}
@@ -1249,15 +1303,15 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
             const x = indexToX(index);
             const wickX = x;
             const bodyX = x - candleWidth / 2;
-            
+
             const bodyTopY = priceToY(candle.bodyTop);
             const bodyBottomY = priceToY(candle.bodyBottom);
             const highY = priceToY(candle.high);
             const lowY = priceToY(candle.low);
-            
+
             const bodyHeight = bodyBottomY - bodyTopY;
             const color = candle.isGreen ? '#22c55e' : '#ef4444';
-            
+
             return (
               <g key={`candle-${index}`}>
                 {/* Wick */}
@@ -1269,7 +1323,7 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
                   stroke={color}
                   strokeWidth={1}
                 />
-                
+
                 {/* Body */}
                 <rect
                   x={bodyX}
@@ -1289,7 +1343,7 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
             // Find the corresponding candle index in the visible data
             const pivotTime = getTimestamp(pivot.timestamp);
             let candleIndex = -1;
-            
+
             // Find the closest matching candle by timestamp
             let closestTimeDiff = Infinity;
             for (let i = 0; i < chartData.candles.length; i++) {
@@ -1300,15 +1354,15 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
                 candleIndex = i;
               }
             }
-            
+
             // Skip if not found in current viewport
             if (candleIndex === -1) return null;
-            
+
             // Use index-based positioning to match candlesticks
             const x = indexToX(candleIndex);
             const y = priceToY(pivot.price);
             const size = Math.max(3, Math.min(8, pivot.strength * 0.8)); // Much smaller with max cap
-            
+
             return (
               <g key={`pivot-${idx}`}>
                 {pivot.type === 'HIGH' ? (
@@ -1337,7 +1391,7 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
             // Find the corresponding candle index in the visible data
             const pivotTime = getTimestamp(pivot.timestamp);
             let candleIndex = -1;
-            
+
             // Find the closest matching candle by timestamp
             let closestTimeDiff = Infinity;
             for (let i = 0; i < chartData.candles.length; i++) {
@@ -1348,15 +1402,15 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
                 candleIndex = i;
               }
             }
-            
+
             // Skip if not found in current viewport
             if (candleIndex === -1) return null;
-            
+
             // Use index-based positioning to match candlesticks
             const x = indexToX(candleIndex);
             const y = priceToY(pivot.price);
             const circleRadius = 15;
-            
+
             return (
               <g key={`local-topbottom-${idx}`}>
                 <circle
@@ -1469,15 +1523,15 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
             const tooltipWidth = tooltip.candle ? 160 : 110;
             const tooltipHeight = tooltip.candle ? 65 : 30;
             const padding = 10;
-            
+
             // Calculate if cursor is near right edge
             const nearRightEdge = tooltip.x + tooltipWidth + padding > plotWidth + margin.left;
             const nearBottomEdge = tooltip.y - tooltipHeight < margin.top;
-            
+
             // Position tooltip on opposite side if needed
             const tooltipX = nearRightEdge ? tooltip.x - tooltipWidth - padding : tooltip.x + padding;
             const tooltipY = nearBottomEdge ? tooltip.y + padding : tooltip.y - tooltipHeight;
-            
+
             return (
               <g className="tooltip">
                 {tooltip.candle ? (

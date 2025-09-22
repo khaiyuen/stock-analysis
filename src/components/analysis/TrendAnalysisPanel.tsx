@@ -8,29 +8,58 @@ import { CheckboxGroup, createDisplayOptionsConfig, createAdvancedOptionsConfig 
 import { detectClientSidePivots as libDetectPivots, detectPowerfulTrendlines as libDetectTrendlines } from '@/lib/trendCloud';
 import { calculateAllMovingAverages, calculateMovingAveragesForRange, MovingAverageData, MA_PERIODS } from '@/lib/movingAverages';
 import SimpleTrendCloud from '@/components/analysis/SimpleTrendCloud';
+import { calculateHighVolumeVWAP, convertCandleDataFormat } from '@/utils/highVolumeVwapCalculator';
 
-// Utility function to check if US market is open
+// Utility function to check if it's currently DST in the US
+function isDST(date: Date): boolean {
+  const year = date.getFullYear();
+
+  // Calculate 2nd Sunday in March
+  const march = new Date(year, 2, 1);
+  const daysToSecondSunday = (14 - march.getDay()) % 7;
+  const dstStart = new Date(year, 2, 8 + daysToSecondSunday, 2);
+
+  // Calculate 1st Sunday in November
+  const november = new Date(year, 10, 1);
+  const daysToFirstSunday = (7 - november.getDay()) % 7;
+  const dstEnd = new Date(year, 10, 1 + daysToFirstSunday, 2);
+
+  return date >= dstStart && date < dstEnd;
+}
+
+// Utility function to check if US market is open (with DST support)
 function isUSMarketOpen(): boolean {
   const now = new Date();
+  const isDaylightSaving = isDST(now);
+  const easternOffset = isDaylightSaving ? -4 : -5; // EDT = UTC-4, EST = UTC-5
+
   const utc = new Date(now.getTime() + (now.getTimezoneOffset() * 60000));
+  const eastern = new Date(utc.getTime() + (easternOffset * 3600000));
 
-  // EST/EDT offset (EST = UTC-5, EDT = UTC-4)
-  // Using EST for simplicity
-  const est = new Date(utc.getTime() + (-5 * 3600000));
-
-  const day = est.getDay(); // 0 = Sunday, 6 = Saturday
-  const hour = est.getHours();
-  const minutes = est.getMinutes();
+  const day = eastern.getDay(); // 0 = Sunday, 6 = Saturday
+  const hour = eastern.getHours();
+  const minutes = eastern.getMinutes();
 
   // Market is closed on weekends
   if (day === 0 || day === 6) return false;
 
-  // Market hours: 9:30 AM - 4:00 PM EST
+  // Market hours: 9:30 AM - 4:00 PM Eastern Time
   const currentMinutes = hour * 60 + minutes;
   const marketOpen = 9 * 60 + 30; // 9:30 AM
   const marketClose = 16 * 60; // 4:00 PM
 
   return currentMinutes >= marketOpen && currentMinutes < marketClose;
+}
+
+// Get Singapore time equivalent with DST consideration
+function getMarketHoursSGT() {
+  const isDaylightSaving = isDST(new Date());
+
+  return {
+    isDST: isDaylightSaving,
+    openTime: isDaylightSaving ? "9:30 PM SGT" : "10:30 PM SGT",
+    closeTime: isDaylightSaving ? "4:00 AM SGT (next day)" : "5:00 AM SGT (next day)"
+  };
 }
 
 interface TrendAnalysisPanelProps {
@@ -389,6 +418,10 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
   const [rawTrendCloudData, setRawTrendCloudData] = useState<unknown>(null);
   const [trendCloudLoading, setTrendCloudLoading] = useState(false);
 
+  // High volume VWAP data state
+  const [highVolumeVWAPData, setHighVolumeVWAPData] = useState<unknown>(null);
+  const [highVolumeVWAPLoading, setHighVolumeVWAPLoading] = useState(false);
+
   // Consolidated display options
   const [displayOptions, setDisplayOptions] = useState({
     showCandles: true,
@@ -398,7 +431,8 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
     showLocalTopBottom: false,
     showPivotLevels: false,
     showTrendCloud: true, // ENABLED - Now using clean trend cloud visualization
-    showMovingAverages: false
+    showMovingAverages: false,
+    showHighVolumeVWAP: false
   });
 
   // Advanced options
@@ -508,6 +542,99 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
     }
   }, [symbol, displayOptions.showTrendCloud]);
 
+  // Calculate high volume VWAP data (Frontend implementation)
+  const calculateHighVolumeVWAPData = useCallback(async () => {
+    if (!displayOptions.showHighVolumeVWAP || !analysis) return;
+
+    setHighVolumeVWAPLoading(true);
+
+    try {
+      // Get the 1D market data for VWAP calculation
+      // IMPORTANT: Use ALL available historical data for VWAP calculation,
+      // not just the visible range, because we need complete volume history
+      // to identify the true highest volume days
+      const rawMarketData = analysis.marketData['1D'] || [];
+
+      if (rawMarketData.length === 0) {
+        throw new Error('No market data available for VWAP calculation');
+      }
+
+      // Convert market data to the format expected by the calculator
+      const candleData = convertCandleDataFormat(rawMarketData);
+
+      // Calculate high volume VWAP using frontend implementation
+      // Use dynamic analysis window based on visible range for relevant anchors
+      let analysisOptions: any = {
+        topVolumeDays: 30,
+        volumePercentileThreshold: 80
+      };
+
+      // If we have a visible range, use it to determine the analysis period
+      // This gives relevant high volume anchors for the current viewing period
+      if (visibleRange) {
+        const visibleStart = new Date(visibleRange.startTime);
+        const visibleEnd = new Date(visibleRange.endTime);
+
+        // For VWAP analysis, use the visible range directly
+        // This will find high volume anchors specifically within the period you're viewing
+        analysisOptions.startDate = visibleStart.toISOString().split('T')[0];
+        analysisOptions.endDate = visibleEnd.toISOString().split('T')[0];
+      }
+
+      const vwapResult = calculateHighVolumeVWAP(candleData, analysisOptions);
+
+      // Transform the result to match the expected API format
+      const transformedData = {
+        symbol,
+        volume_anchors: vwapResult.volumeAnchors.map(anchor => ({
+          date: anchor.date,
+          price: anchor.price,
+          volume: anchor.volume,
+          volume_ratio: anchor.volumeRatio,
+          significance_score: anchor.significanceScore || 0,
+          days_after: anchor.daysAfter
+        })),
+        vwap_results: vwapResult.vwapResults.map(result => ({
+          anchor_id: result.anchorId,
+          anchor_date: result.anchorDate,
+          vwap_data: result.vwapData.map(point => ({
+            date: point.date,
+            vwap: point.vwap,
+            price_deviation: point.priceDeviation,
+            current_price: point.currentPrice
+          }))
+        })),
+        trend_analysis: {
+          current_price: vwapResult.trendAnalysis.currentPrice,
+          total_vwaps: vwapResult.trendAnalysis.totalVwaps,
+          above_vwap_count: vwapResult.trendAnalysis.aboveVwapCount,
+          above_vwap_percentage: vwapResult.trendAnalysis.aboveVwapPercentage,
+          average_deviation: vwapResult.trendAnalysis.averageDeviation,
+          bullish_trends: vwapResult.trendAnalysis.bullishTrends,
+          bearish_trends: vwapResult.trendAnalysis.bearishTrends,
+          bullish_percentage: vwapResult.trendAnalysis.bullishPercentage,
+          bearish_percentage: vwapResult.trendAnalysis.bearishPercentage
+        }
+      };
+
+      setHighVolumeVWAPData(transformedData);
+
+      console.log('✅ Frontend high volume VWAP calculation completed:', {
+        symbol,
+        anchors: transformedData.volume_anchors?.length || 0,
+        vwap_lines: transformedData.vwap_results?.length || 0,
+        calculation_time: 'instant (frontend)'
+      });
+
+    } catch (error) {
+      console.error('Error calculating high volume VWAP data:', error);
+      setError(error instanceof Error ? error.message : 'Failed to calculate high volume VWAP data');
+      setHighVolumeVWAPData(null);
+    } finally {
+      setHighVolumeVWAPLoading(false);
+    }
+  }, [symbol, displayOptions.showHighVolumeVWAP, analysis, visibleRange]);
+
   // No longer needed - consolidated into fetchTrendCloudData
 
   useEffect(() => {
@@ -517,6 +644,10 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
   useEffect(() => {
     fetchTrendCloudData();
   }, [fetchTrendCloudData]);
+
+  useEffect(() => {
+    calculateHighVolumeVWAPData();
+  }, [calculateHighVolumeVWAPData]);
 
 
   // Calculate moving averages data (memoized to avoid recalculation)
@@ -665,7 +796,7 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
     const traditionalPivots = displayOptions.showPivots ? calculateTraditionalPivots(marketData) : [];
 
     // Process trend cloud data for visualization
-    const trendCloudData = displayOptions.showTrendCloud && rawTrendCloudData ? 
+    const trendCloudData = displayOptions.showTrendCloud && rawTrendCloudData ?
       (rawTrendCloudData as any)?.trend_clouds?.map((cloud: any) => ({
         id: cloud.cloud_id,
         center_price: cloud.center_price,
@@ -678,11 +809,30 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
         projection_end: cloud.projection_end,
         calculation_date: cloud.calculation_date,
         current_price: cloud.current_price,
-        color: cloud.cloud_type === 'Support' 
-          ? `rgba(34, 197, 94, ${0.3 + cloud.softmax_weight * 0.5})` 
+        color: cloud.cloud_type === 'Support'
+          ? `rgba(34, 197, 94, ${0.3 + cloud.softmax_weight * 0.5})`
           : `rgba(239, 68, 68, ${0.3 + cloud.softmax_weight * 0.5})`,
         opacity: 0.3 + cloud.softmax_weight * 0.5 // Opacity based on confidence
       })) : [];
+
+    // Process high volume VWAP data for visualization
+    const highVolumeVWAPLines = displayOptions.showHighVolumeVWAP && highVolumeVWAPData ?
+      (highVolumeVWAPData as any)?.vwap_results?.map((vwapResult: any, index: number) => {
+        // Find the corresponding volume anchor to get the anchor price
+        const volumeAnchor = (highVolumeVWAPData as any)?.volume_anchors?.find((anchor: any) =>
+          anchor.date === vwapResult.anchor_date
+        );
+
+        return {
+          id: `hvwap-${vwapResult.anchor_id}`,
+          anchor_date: vwapResult.anchor_date,
+          anchor_price: volumeAnchor?.price || 0, // Get anchor price from volume_anchors
+          vwap_data: vwapResult.vwap_data,
+          color: index < 10 ? 'rgba(79, 70, 229, 0.8)' : 'rgba(79, 70, 229, 0.4)', // Top 10 more visible
+          lineWidth: index < 10 ? 2 : 1,
+          opacity: index < 10 ? 0.8 : 0.4
+        };
+      }) : [];
 
 
 
@@ -693,12 +843,13 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
       trendLines: chartTrendlines, // Powerful trendlines connecting multiple pivots
       traditionalPivots, // Traditional daily pivot levels
       trendClouds: trendCloudData, // Use processed cloud points, not raw API response
-      movingAveragesData // Moving averages data
+      movingAveragesData, // Moving averages data
+      highVolumeVWAPLines // High volume anchored VWAP lines
     };
 
 
     return data;
-  }, [analysis, activeTimeframe, visibleRange, displayOptions.showTrendlines, displayOptions.showDynamicTrendlines, displayOptions.showTrendCloud, displayOptions.showPivots, displayOptions.showLocalTopBottom, displayOptions.showPivotLevels, rawTrendCloudData, symbol, movingAveragesData]); // Updated dependencies for continuous trend clouds
+  }, [analysis, activeTimeframe, visibleRange, displayOptions.showTrendlines, displayOptions.showDynamicTrendlines, displayOptions.showTrendCloud, displayOptions.showHighVolumeVWAP, displayOptions.showPivots, displayOptions.showLocalTopBottom, displayOptions.showPivotLevels, rawTrendCloudData, highVolumeVWAPData, symbol, movingAveragesData]); // Updated dependencies
 
   const handleTimeframeToggle = (timeframe: Timeframe) => {
     setSelectedTimeframes(prev => 
@@ -731,13 +882,14 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
 
     fetchAnalysis(true);
     fetchTrendCloudData(true); // Force update trend clouds too
+    calculateHighVolumeVWAPData(); // Calculate high volume VWAP with fresh data
   };
 
   // Create dynamic display options config with loading states
   const dynamicDisplayOptionsConfig = useMemo(() => {
     const baseConfig = createDisplayOptionsConfig();
 
-    // Find the trend cloud option and update it with loading state
+    // Find options that need dynamic updates and update with loading states
     return baseConfig.map(option => {
       if (option.id === 'showTrendCloud') {
         let badge = 'NEW';
@@ -768,9 +920,36 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
           description
         };
       }
+
+      if (option.id === 'showHighVolumeVWAP') {
+        let badge = 'BETA';
+        let color: 'blue' | 'green' | 'purple' | 'amber' | 'red' | 'indigo' = 'indigo';
+        let description = 'Anchored VWAP from top 30 highest volume days';
+
+        if (highVolumeVWAPLoading) {
+          badge = '🔄 LOADING...';
+          color = 'amber';
+          description = 'Analyzing high volume days and calculating VWAPs...';
+        } else if (highVolumeVWAPData) {
+          const vwapCount = (highVolumeVWAPData as any)?.vwap_results?.length || 0;
+          badge = vwapCount > 0 ? `${vwapCount} VWAPS` : 'READY';
+          color = vwapCount > 0 ? 'green' : 'blue';
+          description = vwapCount > 0
+            ? `${vwapCount} VWAP lines from highest volume institutional days`
+            : 'Anchored VWAP from top 30 highest volume days';
+        }
+
+        return {
+          ...option,
+          badge,
+          color,
+          description
+        };
+      }
+
       return option;
     });
-  }, [trendCloudLoading, updateStatus.isUpdating, updateStatus.stage, rawTrendCloudData]);
+  }, [trendCloudLoading, updateStatus.isUpdating, updateStatus.stage, rawTrendCloudData, highVolumeVWAPLoading, highVolumeVWAPData]);
 
   const getTimeframeColor = (timeframe: Timeframe) => {
     const colors: Record<Timeframe, string> = {
@@ -800,15 +979,20 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
                 </span>
               )}
               <span className="ml-2">
-                {isUSMarketOpen() ? (
-                  <span className="text-orange-600">
-                    • US Market: OPEN (10:30 PM - 5:00 AM SGT)
-                  </span>
-                ) : (
-                  <span className="text-blue-600">
-                    • US Market: CLOSED
-                  </span>
-                )}
+                {(() => {
+                  const marketHours = getMarketHoursSGT();
+                  const isOpen = isUSMarketOpen();
+
+                  return isOpen ? (
+                    <span className="text-orange-600">
+                      • US Market: OPEN ({marketHours.openTime} - {marketHours.closeTime}) {marketHours.isDST ? '[EDT]' : '[EST]'}
+                    </span>
+                  ) : (
+                    <span className="text-blue-600">
+                      • US Market: CLOSED ({marketHours.openTime} - {marketHours.closeTime}) {marketHours.isDST ? '[EDT]' : '[EST]'}
+                    </span>
+                  );
+                })()}
               </span>
             </p>
           </div>
@@ -952,6 +1136,7 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
                 traditionalPivots={currentTimeframeData.traditionalPivots as any}
                 trendClouds={currentTimeframeData.trendClouds}
                 movingAveragesData={currentTimeframeData.movingAveragesData}
+                highVolumeVWAPLines={currentTimeframeData.highVolumeVWAPLines}
                 timeframe={activeTimeframe}
                 className="rounded-lg"
                 showPivots={displayOptions.showPivots}
@@ -962,6 +1147,7 @@ export const TrendAnalysisPanel: React.FC<TrendAnalysisPanelProps> = ({
                 showCandles={displayOptions.showCandles}
                 showTrendCloud={displayOptions.showTrendCloud}
                 showMovingAverages={displayOptions.showMovingAverages}
+                showHighVolumeVWAP={displayOptions.showHighVolumeVWAP}
                 onViewportChange={handleViewportChange}
               />
             </div>
