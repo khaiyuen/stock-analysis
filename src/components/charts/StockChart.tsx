@@ -130,11 +130,13 @@ export const StockChart: React.FC<StockChartProps> = ({
             tick={{ fontSize: 12 }}
             interval="preserveStartEnd"
           />
-          <YAxis 
+          <YAxis
             stroke="#666"
             fontSize={12}
             tick={{ fontSize: 12 }}
             tickFormatter={(value) => `$${value.toFixed(2)}`}
+            scale="log"
+            domain={['dataMin', 'dataMax']}
           />
           <Tooltip
             contentStyle={{

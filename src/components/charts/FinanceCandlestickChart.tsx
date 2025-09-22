@@ -150,7 +150,7 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
     const padding = (maxPrice - minPrice) * 0.05;
 
     const priceRange = {
-      min: minPrice - padding,
+      min: Math.max(minPrice - padding, minPrice * 0.95), // Ensure min doesn't go below 95% of actual min price
       max: maxPrice + padding
     };
 
@@ -202,16 +202,16 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
   // Price scale function - logarithmic scale for financial data
   const priceToY = (price: number) => {
     const { min, max } = chartData.priceRange;
-    if (min > 0 && max > 0 && price > 0) {
-      // Logarithmic scale for percentage-based visualization
-      const logMin = Math.log(min);
-      const logMax = Math.log(max);
-      const logPrice = Math.log(price);
-      return margin.top + ((logMax - logPrice) / (logMax - logMin)) * plotHeight;
-    } else {
-      // Fallback to linear scale if any value is <= 0
-      return margin.top + ((max - price) / (max - min)) * plotHeight;
-    }
+    // Only use safety fallback if values are actually <= 0 (shouldn't happen with stock data)
+    const safePrice = price > 0 ? price : 0.001;
+    const safeMin = min > 0 ? min : 0.001;
+    const safeMax = max > 0 ? max : 0.001;
+
+    // Always use logarithmic scale for percentage-based visualization
+    const logMin = Math.log(safeMin);
+    const logMax = Math.log(safeMax);
+    const logPrice = Math.log(safePrice);
+    return margin.top + ((logMax - logPrice) / (logMax - logMin)) * plotHeight;
   };
 
   // Inverse function to convert Y position back to price (logarithmic)
@@ -219,16 +219,15 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
     const { min, max } = chartData.priceRange;
     const normalizedY = (y - margin.top) / plotHeight;
 
-    if (min > 0 && max > 0) {
-      // Inverse of logarithmic scale
-      const logMin = Math.log(min);
-      const logMax = Math.log(max);
-      const logPrice = logMax - normalizedY * (logMax - logMin);
-      return Math.exp(logPrice);
-    } else {
-      // Fallback to linear scale
-      return max - normalizedY * (max - min);
-    }
+    // Only use safety fallback if values are actually <= 0 (shouldn't happen with stock data)
+    const safeMin = min > 0 ? min : 0.001;
+    const safeMax = max > 0 ? max : 0.001;
+
+    // Always use inverse of logarithmic scale
+    const logMin = Math.log(safeMin);
+    const logMax = Math.log(safeMax);
+    const logPrice = logMax - normalizedY * (logMax - logMin);
+    return Math.exp(logPrice);
   };
 
   const timeToX = (timestamp: number) => {
@@ -412,53 +411,33 @@ export const FinanceCandlestickChart: React.FC<FinanceCandlestickChartProps> = (
     const { min, max } = chartData.priceRange;
     const ticks = [];
 
-    if (min > 0 && max > 0) {
-      // For small price ranges, use nice linear numbers
-      if (max / min < 2) {
-        const niceNumbers = generateNiceNumbers(min, max, 8);
-        niceNumbers.forEach(value => {
-          ticks.push({
-            value,
-            y: priceToY(value),
-            label: `$${formatTo2SigFigs(value)}`
-          });
-        });
-      } else {
-        // For larger ranges, use logarithmic spacing but round to nice numbers
-        const logMin = Math.log(min);
-        const logMax = Math.log(max);
-        const logRange = logMax - logMin;
-        const targetTickCount = 8;
+    // Only use safety fallback if values are actually <= 0 (shouldn't happen with stock data)
+    const safeMin = min > 0 ? min : 0.001;
+    const safeMax = max > 0 ? max : 0.001;
 
-        for (let i = 0; i <= targetTickCount; i++) {
-          const logValue = logMin + (logRange * i) / targetTickCount;
-          let value = Math.exp(logValue);
+    // Always use logarithmic spacing but round to nice numbers
+    const logMin = Math.log(safeMin);
+    const logMax = Math.log(safeMax);
+    const logRange = logMax - logMin;
+    const targetTickCount = 8;
 
-          // Round to a "nice" number based on magnitude
-          const magnitude = Math.floor(Math.log10(value));
-          const factor = Math.pow(10, magnitude - 1); // Keep 2 significant digits
-          value = Math.round(value / factor) * factor;
+    for (let i = 0; i <= targetTickCount; i++) {
+      const logValue = logMin + (logRange * i) / targetTickCount;
+      let value = Math.exp(logValue);
 
-          // Avoid duplicates and ensure within range
-          if (value >= min && value <= max && !ticks.some(t => Math.abs(t.value - value) < value * 0.01)) {
-            ticks.push({
-              value,
-              y: priceToY(value),
-              label: `$${formatTo2SigFigs(value)}`
-            });
-          }
-        }
-      }
-    } else {
-      // Fallback to nice linear numbers for edge cases
-      const niceNumbers = generateNiceNumbers(min, max, 8);
-      niceNumbers.forEach(value => {
+      // Round to a "nice" number based on magnitude
+      const magnitude = Math.floor(Math.log10(value));
+      const factor = Math.pow(10, magnitude - 1); // Keep 2 significant digits
+      value = Math.round(value / factor) * factor;
+
+      // Avoid duplicates and ensure within range
+      if (value >= safeMin && value <= safeMax && !ticks.some(t => Math.abs(t.value - value) < value * 0.01)) {
         ticks.push({
           value,
           y: priceToY(value),
           label: `$${formatTo2SigFigs(value)}`
         });
-      });
+      }
     }
 
     // Verify tick alignment by checking if priceToY/yToPrice are consistent
