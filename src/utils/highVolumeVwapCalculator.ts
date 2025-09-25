@@ -192,18 +192,20 @@ function calculateVWAPFromAnchor(
 ): VWAPPoint[] {
   const vwapData: VWAPPoint[] = [];
   let cumulativeVolume = 0;
-  let cumulativeVolumeTypical = 0;
+  let cumulativeVolumeWeighted = 0;
 
   for (let i = anchorIndex; i < candleData.length; i++) {
     const candle = candleData[i];
-    const typicalPrice = (candle.high + candle.low + candle.close) / 3;
+
+    // Use closing price for daily VWAP calculations (more standard for daily timeframes)
+    const price = candle.close;
 
     // Add current bar to cumulative calculations
     cumulativeVolume += candle.volume;
-    cumulativeVolumeTypical += candle.volume * typicalPrice;
+    cumulativeVolumeWeighted += candle.volume * price;
 
     // Calculate VWAP
-    const vwap = cumulativeVolume > 0 ? cumulativeVolumeTypical / cumulativeVolume : typicalPrice;
+    const vwap = cumulativeVolume > 0 ? cumulativeVolumeWeighted / cumulativeVolume : price;
 
     // Calculate price deviation
     const priceDeviation = vwap > 0 ? ((candle.close - vwap) / vwap) * 100 : 0;
